@@ -30,6 +30,11 @@ import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { BoundedIdSet } from "../client/bounded-id-set.js";
+import { buildInjectionPrompt } from "../client/injection-prompt.js";
+import {
+  claudeInboxSocketAvailable,
+  deliverViaClaudeInboxSocket,
+} from "../client/claude-inbox-socket.js";
 import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
@@ -549,6 +554,10 @@ export class McpAgentBridge {
   }
 
   private deliverChannelMessage(channelMessage: ChannelMessage): void {
+    // The live WS handler and the registry sync both land here; without this a
+    // reconnect replay during an in-flight delivery surfaces the message twice.
+    if (this.surfacedInboxMessageIds.has(channelMessage.messageId)) return;
+
     const isPassiveInnerClientMirror =
       (this.clientProfile.id === "codex" || this.clientProfile.id === "antigravity") &&
       typeof channelMessage.toAgentId === "string" &&
@@ -574,11 +583,43 @@ export class McpAgentBridge {
     // request — agy surfaces it as a live interaction even when idle, and its
     // answer is relayed straight back to the channel. Falls back to the
     // notification path if the elicit is declined / times out / unsupported.
-    if (this.clientProfile.id === "antigravity" && this.clientCapabilities.elicitation) {
-      void this.tryElicitPush(channelMessage).then((delivered) => {
+    // Claude Code native push: sessions with cross-session messaging (CC ≥
+    // 2.1.224) export their inbox socket to child processes, and the adapter
+    // is one. Injecting the message as a `user` frame starts a real turn even
+    // when the session is idle — strictly more reliable than the
+    // notifications/claude/channel path, which Claude only reads when it
+    // happens to look. Falls back to the notification path on any failure.
+    // Both async branches claim the id up front (released on failure): each
+    // duplicate here is a whole extra turn, not just a repeated notification.
+    if (this.clientProfile.id === "claude" && claudeInboxSocketAvailable()) {
+      this.surfacedInboxMessageIds.add(channelMessage.messageId);
+      // Not `mcp__open-agent-bridge__reply`: a plugin install prefixes it as `mcp__plugin_…`.
+      const prompt = buildInjectionPrompt(channelMessage, { replyTool: "reply (open-agent-bridge MCP tool)" });
+      void deliverViaClaudeInboxSocket(prompt).then((delivered) => {
         if (delivered) {
-          this.surfacedInboxMessageIds.add(channelMessage.messageId);
+          if (!isPassiveInnerClientMirror) {
+            void this.postChannelAck({
+              conversationId: channelMessage.conversationId,
+              messageId: channelMessage.messageId,
+              state: "displayed_to_client",
+              actorId: this.clientAgentId ?? "mcp-adapter",
+              actorType: "bridge",
+              detail: "Message injected via Claude Code inbox socket",
+            });
+          }
         } else {
+          this.surfacedInboxMessageIds.delete(channelMessage.messageId);
+          this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
+        }
+      });
+      return;
+    }
+
+    if (this.clientProfile.id === "antigravity" && this.clientCapabilities.elicitation) {
+      this.surfacedInboxMessageIds.add(channelMessage.messageId);
+      void this.tryElicitPush(channelMessage).then((delivered) => {
+        if (!delivered) {
+          this.surfacedInboxMessageIds.delete(channelMessage.messageId);
           this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
         }
       });
@@ -609,7 +650,10 @@ export class McpAgentBridge {
             state: "displayed_to_client",
             actorId: this.clientAgentId ?? "mcp-adapter",
             actorType: "bridge",
-            detail: "Message forwarded to client channel",
+            detail:
+              this.clientProfile.id === "claude"
+                ? "Pushed via notifications/claude/channel (shown only with the legacy channels flag)"
+                : "Message forwarded to client channel",
           });
         }
       }
@@ -902,6 +946,12 @@ export class McpAgentBridge {
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
+        if (this.clientProfile.id === "claude" && !claudeInboxSocketAvailable()) {
+          console.error(
+            "[MCP] No Claude Code inbox socket (CC < 2.1.224 or cross-session messaging off): " +
+              "live push needs `oab claude --legacy-channels`; otherwise messages wait in channel_inbox.",
+          );
+        }
 
         // ── Capability probe ──────────────────────────────────────────────
         // Server→client push for non-Claude clients depends on which MCP
@@ -1413,7 +1463,7 @@ export class McpAgentBridge {
           "(a) conversationId participant lookup, (b) project name/path match; " +
           "when a project has multiple sessions, claude-code > antigravity > codex (override with clientType). " +
           "\n\nDELIVERY SEMANTICS by target type:" +
-          "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
+          "\n  • Claude Code  → message is injected as a new turn via Claude Code's inbox socket (fallback: <channel> push event)." +
           "\n  • OpenCode     → message arrives as a push notification via notifications/opencode/channel." +
           "\n  • Codex        → message is injected as a new turn prompt by the bridge daemon." +
           "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +

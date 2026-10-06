@@ -46,7 +46,7 @@ The adapter classifies every registry entry internally with a `peerType`. In the
 ```
 
 Routing notes:
-- **To a Claude Code peer**: the message is delivered as a `<channel>` push event; the receiving Claude Code session sees it almost immediately.
+- **To a Claude Code peer**: the message is injected as a new turn through Claude Code's native inbox socket (cross-session messaging, CC ≥ 2.1.224), even if that session is idle; older sessions launched with the legacy channels flag get a `<channel>` push event instead.
 - **To a Codex/Antigravity peer**: the bridge daemon injects the content as a fresh turn into the CLI. *Simultaneously* the inner client surfaces the message in its own `channel_inbox(pendingOnly=true)` so the agent can poll it on the next tool call.
 - If you need an answer, make that explicit in the message or pass `expectsResponse=true`. If the message is informational, pass `expectsResponse=false` or phrase it as no-response/FYI. When omitted, the adapter infers the flag from the text.
 
