@@ -59,7 +59,7 @@ oab down                  # detiene el daemon
 
 ### `claude`
 
-Lanza Claude Code cableado al bridge: asegura registry + `.mcp.json`, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude --dangerously-load-development-channels server:open-agent-bridge`. Flags extra se pasan tal cual a `claude`.
+Lanza Claude Code cableado al bridge: asegura registry + `.mcp.json`, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude` (sin flag dangerous: la entrega usa el inbox socket nativo de Claude Code ≥ 2.1.224; `--legacy-channels` fuerza `--dangerously-load-development-channels server:open-agent-bridge`). Flags extra se pasan tal cual a `claude`.
 
 ```bash
 oab claude --identity dev [--project <path>] [--port 4999] [-- <flags de claude>]

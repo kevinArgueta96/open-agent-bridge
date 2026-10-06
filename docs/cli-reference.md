@@ -137,7 +137,7 @@ oab status [options]
 
 ### `claude`
 
-Lanza Claude Code totalmente cableado en un comando: asegura el registry (lo arranca si hace falta), escribe `.mcp.json` si falta, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude --dangerously-load-development-channels server:open-agent-bridge`. **No** detiene el registry al salir (es un daemon compartido). Flags desconocidos se pasan tal cual a `claude`.
+Lanza Claude Code totalmente cableado en un comando: asegura el registry (lo arranca si hace falta), escribe `.mcp.json` si falta, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude`. La entrega push usa el inbox socket nativo de Claude Code (≥ 2.1.224); el flag `--dangerously-load-development-channels server:open-agent-bridge` solo se agrega en versiones anteriores o con `--legacy-channels`. **No** detiene el registry al salir (es un daemon compartido). Flags desconocidos se pasan tal cual a `claude`.
 
 ```
 oab claude [options] [-- <flags de claude>]
@@ -148,6 +148,7 @@ oab claude [options] [-- <flags de claude>]
 | `--identity <id>` | `global` | Namespace de canal. |
 | `--project <path>` | cwd | Proyecto. |
 | `-p, --port <number>` | `4999` | Puerto del registry. |
+| `--legacy-channels` | auto (solo CC < 2.1.224) | Agrega `--dangerously-load-development-channels server:open-agent-bridge` (push vía `<channel>`). |
 
 ```bash
 oab claude --identity dev
@@ -454,6 +455,7 @@ Arranca Codex con el bridge bidireccional completo en un comando: auto-arranca e
 | `--app-server-port <number>` | `4500` | Puerto inicial del app-server (auto-incrementa si está ocupado). |
 | `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
 | `--identity <id>` | `global` | Namespace de canal. |
+| `--effort <level>` | default del modelo | Reasoning effort de los turnos del canal (`minimal`…`ultra`); `ultra` = delegación proactiva a sub-agentes. Pegajoso para todo el thread del bridge. |
 
 ```bash
 oab codex start --identity dev
@@ -469,6 +471,7 @@ Arranca el daemon del bridge del app-server de Codex (sin lanzar la TUI). Luego 
 | `--project <path>` | cwd | Proyecto para el registro del cliente. |
 | `--app-server-port <number>` | `4500` | Puerto inicial del app-server. |
 | `--identity <id>` | `global` | Namespace de canal. |
+| `--effort <level>` | default del modelo | Reasoning effort de los turnos del canal (`minimal`…`ultra`); `ultra` = delegación proactiva a sub-agentes. Pegajoso para todo el thread del bridge. |
 
 #### `codex tmux-bind`
 
