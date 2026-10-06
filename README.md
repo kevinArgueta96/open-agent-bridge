@@ -143,8 +143,9 @@ oab opencode install-plugin --project .
 - **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
 - **Per-identity inboxes.** Every launcher accepts `--identity <ns>`. Sessions only see channel messages from peers in the same namespace — a hard wall, even for directed messages. `list_agents` is filtered to the namespace too. Default namespace is `global`.
 - **Bounded inbox, no saturation.** `channel_inbox` is capped (`limit=25`, previews only by default) so a flood of pending messages never buries new ones, and `channel_clear` plus an automatic terminal sweep keep each inbox light.
+- **Claude Code native push, no dev flag.** The MCP adapter writes incoming messages into Claude Code's own cross-session inbox socket (CC ≥ 2.1.224), so they run as the session's next turn — even when it is idle — without `--dangerously-load-development-channels`.
 - **OpenCode plugin bridge.** The `opencode install-plugin` command installs a local OpenCode plugin that registers an OpenCode bridge client, opens a registry WebSocket, and injects incoming channel messages into the active OpenCode session with `session.prompt_async`.
-- **Codex app-server bridge.** `CodexAppServerBridge` injects incoming channel messages directly into the Codex app-server via `turn/start` JSON-RPC, so Codex actually processes requests rather than just receiving raw text.
+- **Codex app-server bridge.** `CodexAppServerBridge` owns its own Codex thread and injects incoming channel messages via `turn/start` JSON-RPC, so Codex actually processes requests — with or without a TUI attached. `--effort ultra` lets Codex delegate those tasks to sub-agents.
 - **Antigravity native push.** `AntigravityLsBridgeService` (`antigravity ls-push`) delivers channel messages straight into a live `agy` TUI through its Cascade Language Server (`SendUserCascadeMessage`) — native push, no tmux, no manual "check inbox".
 
 ---
@@ -170,13 +171,14 @@ Claude Code / OpenCode / Codex / Antigravity (agy) / Dashboard
   │  Skills        │  │  channel_clear            │
   │  AG-UI SSE     │  │  message_client_session   │
   │                │  │  reply                    │
+  │                │  │  Claude push: inbox socket│
   └────────────────┘  └──────────────────────────┘
 
   ┌──────────────────────────────────────────────┐
   │  CodexAppServerBridge  (separate daemon)      │
   │  Spawns: codex app-server (:4500)             │
   │  Connects: WS to registry + WS to app-server  │
-  │  Injects channel messages via turn/start       │
+  │  Owns a thread, injects via turn/start        │
   └──────────────────────────────────────────────┘
 
   ┌──────────────────────────────────────────────┐
@@ -205,12 +207,12 @@ Claude Code
   McpAgentBridge posts ChannelMessage to RegistryServer /channel/messages
   RegistryServer broadcasts via WS to all subscribers
   CodexAppServerBridge receives channel.message event
-  CodexAppServerBridge calls turn/start on codex app-server
-  Codex processes the turn and produces a reply
-  CodexAppServerBridge sends reply ChannelMessage back to registry
+  CodexAppServerBridge calls turn/start on its own thread (queued if a turn is running)
+  Codex processes the turn and answers with the reply tool (or the bridge relays its final message)
+  The reply ChannelMessage goes back through the registry
   McpAgentBridge receives channel.message with the reply
-  McpAgentBridge surfaces reply in channel_inbox
-  Claude Code calls reply tool to close the conversation thread
+  McpAgentBridge writes it into Claude Code's inbox socket → it runs as Claude's next turn
+  The reply is also listed in channel_inbox
 ```
 
 ---
@@ -1231,9 +1233,10 @@ src/
 | :--- | :--- |
 | Registry HTTP + WS + SQLite | stable |
 | MCP adapter — 6 tools | stable |
-| Claude Code push bridge | stable |
+| Claude Code native push (inbox socket, no dev flag) | beta — needs Claude Code ≥ 2.1.224; older releases use the legacy `<channel>` push (`--legacy-channels`) |
 | OpenCode plugin push bridge | stable |
-| Codex app-server bridge | stable |
+| Codex app-server bridge (bridge-owned thread) | stable |
+| Codex sub-agent delegation (`--effort ultra`) | beta — opt-in, model-dependent |
 | Antigravity native push (Cascade Language Server, `ls-push`) | stable — requires an open agy conversation |
 | Identity scoping (`--identity`, per-namespace inbox + `list_agents`) | stable |
 | Inbox bounding + `channel_clear` + terminal sweep | stable |
@@ -1266,6 +1269,8 @@ Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), 
 - **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
 - **Volatile agent registry.** The `AgentStore` is in-memory only. Restarting the registry clears all registered agents and heartbeats — agents re-register automatically on reconnect, but any in-flight state is lost. Only channel messages and ACKs (in `channel_messages`, `channel_acks`, `channel_suppressed_conversations`) are persisted to SQLite.
 - **Codex bridge requires app-server remote TUI or tmux fallback.** The preferred path is `open-agent-bridge codex start` or `codex --remote ws://127.0.0.1:<port>` against the bridge app-server. A plain `codex` session is isolated and cannot receive automatic turn injection. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
+- **Claude Code native push is best effort.** It needs Claude Code ≥ 2.1.224 with cross-session messaging on. Claude Code's ingress guard may hold or refuse a peer message depending on the session's permission mode, and the socket returns no confirmation, so `displayed_to_client` means "handed to Claude Code", not "read". Without a socket, live push only works with `oab claude --legacy-channels`; otherwise messages wait in `channel_inbox`.
+- **Codex `--effort` is thread-wide.** Codex keeps a turn's reasoning effort for the rest of the thread, so the level applies to every channel message the bridge handles, not to a single task.
 - **OpenCode push requires the local plugin.** OpenCode can call the MCP tools without the plugin, but automatic turn injection depends on `open-agent-bridge opencode install-plugin` and an OpenCode restart. Without the plugin bridge, inbound work must be discovered through `channel_inbox`.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
 - **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported. The method is a stub — it is not announced in the Agent Card.
