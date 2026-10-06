@@ -18,6 +18,8 @@ export interface CodexAppServerBridgeOptions {
   identity?: string;
   /** Port for the codex app-server process. Default: 4500 */
   appServerPort?: number;
+  /** Reasoning effort for channel turns; `ultra` = proactive sub-agent delegation. */
+  effort?: string;
 }
 
 interface QueuedMessage {
@@ -98,6 +100,7 @@ export class CodexAppServerBridge extends EventEmitter {
       // Channel traffic is answered in a bridge-owned thread, so we declare its
       // permissions explicitly instead of inheriting whatever the TUI negotiated.
       sandbox: "read-only",
+      effort: options.effort ?? null,
     });
 
     this.channelTransport = new ChannelTransport({ registryUrl: this.registryUrl });
@@ -386,6 +389,19 @@ export class CodexAppServerBridge extends EventEmitter {
       if (!ctx) return;
       console.error(`[Bridge] agentMessage captured (${text.length} chars), sending reply`);
       void this.sendReplyToRegistry(text, ctx);
+    });
+
+    // The message was already acked displayed_to_client when turn/start went
+    // out; without this a rejection leaves the sender waiting forever.
+    this.client.on("injectionRejected", (ctx, reason) => {
+      void this.channelTransport.postChannelAck({
+        conversationId: ctx.conversationId,
+        messageId: ctx.messageId,
+        state: "failed",
+        actorId: this.clientAgentId ?? "codex-app-bridge",
+        actorType: "bridge",
+        detail: `Codex app-server rejected turn/start: ${reason}`,
+      });
     });
 
     this.client.on("disconnected", () => {

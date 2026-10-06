@@ -24,6 +24,8 @@ export interface InjectionContext {
 
 export interface CodexAppServerClientEvents {
   agentMessage: [text: string, ctx: InjectionContext | null];
+  /** The app-server refused a turn/start we sent (bad params, thread gone…). */
+  injectionRejected: [ctx: InjectionContext, reason: string];
   turnStarted: [turnId: string];
   turnCompleted: [turnId: string];
   threadDetected: [threadId: string];
@@ -40,6 +42,10 @@ export interface CodexAppServerClientOptions {
   sandbox?: "read-only" | "workspace-write";
   /** Model for the bridge-owned thread. null = let Codex pick its configured default. */
   model?: string | null;
+  /** Reasoning effort sent on every turn/start. Codex makes it sticky for the
+   *  thread, and `ultra` is what turns on proactive sub-agent delegation.
+   *  null = the model's configured default. */
+  effort?: string | null;
 }
 
 /** Identifies this client to Codex in `thread/start`. */
@@ -58,6 +64,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
   private readonly cwd: string;
   private readonly sandbox: "read-only" | "workspace-write";
   private readonly model: string | null;
+  private readonly effort: string | null;
 
   private ws: WebSocket | null = null;
   private _initialized = false;
@@ -96,6 +103,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     this.cwd = options.cwd ?? process.cwd();
     this.sandbox = options.sandbox ?? "read-only";
     this.model = options.model ?? null;
+    this.effort = options.effort ?? null;
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -228,6 +236,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
       params: {
         threadId: this._currentThreadId,
         input: [{ type: "text", text }],
+        ...(this.effort ? { effort: this.effort } : {}),
       },
     });
 
@@ -317,6 +326,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         console.error(
           `[CodexClient] Injection id=${id} rejected: ${msg.error.message}`,
         );
+        this.emit("injectionRejected", this.injectionContexts.get(id)!, msg.error.message);
         this.injectionContexts.delete(id);
         if (this.lastInjectionRequestId === id) this.lastInjectionRequestId = null;
         this._turnInProgress = false;

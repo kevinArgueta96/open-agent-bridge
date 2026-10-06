@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import type { Command } from "commander";
+import { type Command, Option } from "commander";
 import chalk from "chalk";
 import { CodexTmuxBridgeService } from "../../client/codex-tmux-bridge-service.js";
 import { detectCurrentTmuxBinding } from "../../client/codex-tmux.js";
@@ -29,6 +29,12 @@ async function findAvailablePort(startPort: number, maxAttempts = 20): Promise<n
   throw new Error(`No available port found in range ${startPort}–${startPort + maxAttempts - 1}`);
 }
 
+// Reasoning efforts codex-cli 0.146 knows; the model must also advertise the
+// one picked, or turn/start is rejected (and the message is acked `failed`).
+const effortOption = () =>
+  new Option("--effort <level>", "Reasoning effort for channel turns; `ultra` = proactive sub-agent delegation")
+    .choices(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
 export function registerCodexCommand(program: Command): void {
   const codex = program.command("codex").description("Codex-specific utilities");
 
@@ -45,6 +51,7 @@ export function registerCodexCommand(program: Command): void {
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
+    .addOption(effortOption())
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const registryUrl: string = options.registryUrl;
@@ -95,6 +102,7 @@ export function registerCodexCommand(program: Command): void {
         projectPath,
         appServerPort,
         identity: options.identity,
+        effort: options.effort,
       });
 
       try {
@@ -164,6 +172,7 @@ export function registerCodexCommand(program: Command): void {
     .option("--project <path>", "Project path for client registration (default: cwd)")
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
+    .addOption(effortOption())
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const requestedPort = Number(options.appServerPort);
@@ -177,6 +186,7 @@ export function registerCodexCommand(program: Command): void {
         projectPath,
         appServerPort,
         identity: options.identity,
+        effort: options.effort,
       });
 
       console.log(chalk.bold("\n[open-agent-bridge] Codex app-server bridge\n"));

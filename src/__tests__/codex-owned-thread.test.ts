@@ -121,3 +121,43 @@ describe("CodexAppServerClient — bridge-owned thread", () => {
     await expect(client.interruptTurn()).resolves.toBe(false);
   });
 });
+
+describe("CodexAppServerClient — turn/start effort and rejection", () => {
+  const ctx = { conversationId: "c-1", messageId: "m-1", fromAgentId: "a-1", expectsResponse: true };
+
+  function readyClient(effort: string | null) {
+    const client = new CodexAppServerClient({ effort });
+    const raw = client as unknown as Record<string, unknown>;
+    const sent: Array<Record<string, unknown>> = [];
+    raw.ws = { readyState: 1 }; // WebSocket.OPEN
+    raw._initialized = true;
+    raw._currentThreadId = "own-1";
+    raw.send = (msg: Record<string, unknown>) => sent.push(msg);
+    return { client, raw, sent };
+  }
+
+  it("sends the configured effort on turn/start, and nothing when unset", () => {
+    const withEffort = readyClient("ultra");
+    withEffort.client.injectMessage("hi", ctx);
+    expect(withEffort.sent[0]?.params).toMatchObject({ threadId: "own-1", effort: "ultra" });
+
+    const without = readyClient(null);
+    without.client.injectMessage("hi", ctx);
+    expect(without.sent[0]?.params).not.toHaveProperty("effort");
+  });
+
+  it("emits injectionRejected with the message context when turn/start fails", () => {
+    const { client, raw, sent } = readyClient("ultra");
+    const rejected: unknown[] = [];
+    client.on("injectionRejected", (c, reason) => rejected.push([c, reason]));
+
+    client.injectMessage("hi", ctx);
+    (raw.handleResponse as (m: unknown) => void).call(client, {
+      id: sent[0]?.id,
+      error: { message: "unsupported effort" },
+    });
+
+    expect(rejected).toEqual([[ctx, "unsupported effort"]]);
+    expect(client.turnInProgress).toBe(false);
+  });
+});
