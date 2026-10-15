@@ -48,6 +48,7 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
 - [Client bridges](#client-bridges)
   - [Claude Code bridge (native inbox socket)](#claude-code-bridge-native-inbox-socket)
   - [OpenCode bridge (plugin push)](#opencode-bridge-plugin-push)
+  - [Codex native delivery (app-server daemon)](#codex-native-delivery-app-server-daemon)
   - [Codex bridge (app-server)](#codex-bridge-app-server)
   - [Antigravity bridge (Cascade Language Server push)](#antigravity-bridge-cascade-language-server-push)
   - [Delivery mode comparison](#delivery-mode-comparison)
@@ -145,7 +146,7 @@ oab opencode install-plugin --project .
 - **Bounded inbox, no saturation.** `channel_inbox` is capped (`limit=25`, previews only by default) so a flood of pending messages never buries new ones, and `channel_clear` plus an automatic terminal sweep keep each inbox light.
 - **Claude Code native push, no dev flag.** The MCP adapter writes incoming messages into Claude Code's own cross-session inbox socket (CC ≥ 2.1.224), so they run as the session's next turn — even when it is idle — without `--dangerously-load-development-channels`.
 - **OpenCode plugin bridge.** The `opencode install-plugin` command installs a local OpenCode plugin that registers an OpenCode bridge client, opens a registry WebSocket, and injects incoming channel messages into the active OpenCode session with `session.prompt_async`.
-- **Codex app-server bridge.** `CodexAppServerBridge` owns its own Codex thread and injects incoming channel messages via `turn/start` JSON-RPC, so Codex actually processes requests — with or without a TUI attached. `--effort ultra` lets Codex delegate those tasks to sub-agents.
+- **Codex native push, too.** On codex-cli ≥ 0.162 the MCP adapter starts incoming messages as a new turn in the user's live Codex TUI through Codex's own app-server daemon. For headless use, `oab codex start` runs a bridge that owns its own Codex thread (`--effort ultra` lets it delegate tasks to sub-agents).
 - **Antigravity native push.** `AntigravityLsBridgeService` (`antigravity ls-push`) delivers channel messages straight into a live `agy` TUI through its Cascade Language Server (`SendUserCascadeMessage`) — native push, no tmux, no manual "check inbox".
 
 ---
@@ -344,6 +345,10 @@ The plugin registers as an OpenCode bridge client (`clientVersion: "opencode-plu
 When OpenCode is connected through MCP, `list_agents(includeClients=true)` shows rows like `[OpenCode]` and `[OpenCode bridge]`. Routing is automatic: sending to the OpenCode MCP client is redirected to the sibling plugin bridge when present, while the MCP client can still use `channel_inbox` and `reply`.
 
 ### Codex
+
+**Native (codex-cli ≥ 0.162) — just run `codex`.** The interactive TUI runs on a shared app-server daemon, and the open-agent-bridge MCP server (from the plugin or `~/.codex/config.toml`) is one of that daemon's MCP servers. Incoming channel messages are started as a new turn **in your live TUI thread** — the same experience as Claude Code's inbox socket — and Codex answers with the `reply` tool. No extra daemon, no separate thread. See [Codex native delivery](#codex-native-delivery-app-server-daemon).
+
+**Headless / older Codex — `oab codex start`.** Runs a bridge that owns its own Codex thread, so messages are answered even with no TUI open:
 
 ```bash
 open-agent-bridge codex start --project "/absolute/path/to/your/project"
@@ -908,6 +913,24 @@ OpenCode can also connect to the MCP adapter as a normal MCP client. In that cas
 
 ---
 
+### Codex native delivery (app-server daemon)
+
+Since codex-cli 0.162 the `codex` TUI no longer runs its own engine: it attaches to a shared **app-server daemon** listening on `$CODEX_HOME/app-server-control/app-server-control.sock` (WebSocket over a Unix socket). The daemon starts one open-agent-bridge MCP adapter per thread, and that adapter delivers channel messages straight into the user's session:
+
+```
+Incoming channel message
+  → the Codex MCP adapter (client-codex-mcp-client-*) receives it via the registry WS
+  → connects to the daemon socket: initialize → thread/loaded/list → thread/read
+  → picks its own thread (same cwd, UUIDv7 creation time closest to the adapter's start)
+  → turn/start on that thread — it shows up in the live TUI as a new turn
+  → Codex answers with the `reply` tool, like Claude Code does
+```
+
+- **Busy sessions queue it.** If a turn is running, the adapter waits for `thread/status/changed` → `idle` (up to 5 minutes) instead of interrupting or steering it.
+- **One answer, even with closed TUIs around.** The daemon keeps threads (and their adapters) loaded after a TUI exits, all sharing the project's agentId. Only the adapter of the newest thread in the project delivers, so a closed session cannot answer a second time.
+- **Fallback.** No daemon, no thread for the project, or the wait times out → the message stays in `channel_inbox`.
+- When an `oab codex start` bridge is running for the project, routing prefers it and the inner client stays a passive mirror.
+
 ### Codex bridge (app-server)
 
 The Codex bridge runs as a **separate daemon** (`CodexAppServerBridge`) that connects the channel layer to the Codex app-server JSON-RPC protocol:
@@ -1044,7 +1067,7 @@ Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEG
 | :--- | :--- | :--- | :--- |
 | **Claude Code** | Native inbox socket (built into the MCP adapter) | User frame on `$CLAUDE_CODE_MESSAGING_SOCKET` → queued peer message, runs as the next turn. Fallback: `<channel>` block via `notifications/claude/channel` (legacy flag only) | No — part of MCP adapter |
 | **OpenCode** | Local plugin bridge | `session.prompt_async` → OpenCode processes as a prompt turn | No separate process — plugin runs inside OpenCode |
-| **Codex** | App-server daemon | `turn/start` JSON-RPC → Codex processes as a prompt turn | Yes — `codex app-bridge` |
+| **Codex** | Native via the app-server daemon (built into the MCP adapter); headless bridge as alternative | `turn/start` on the user's live TUI thread (codex ≥ 0.162); or on a bridge-owned thread with `oab codex start` | No for native — part of MCP adapter; yes for `oab codex start` |
 | **Antigravity (`agy`)** | Cascade Language Server push | `SendUserCascadeMessage` → agy processes as a user turn in the live TUI | Yes — `antigravity ls-push` |
 | **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
 
@@ -1235,7 +1258,8 @@ src/
 | MCP adapter — 6 tools | stable |
 | Claude Code native push (inbox socket, no dev flag) | stable — needs Claude Code ≥ 2.1.224; older releases use the legacy `<channel>` push (`--legacy-channels`) |
 | OpenCode plugin push bridge | stable |
-| Codex app-server bridge (bridge-owned thread) | stable |
+| Codex native push (app-server daemon, live TUI thread) | beta — needs codex-cli ≥ 0.162 |
+| Codex app-server bridge (bridge-owned thread, `oab codex start`) | stable |
 | Codex sub-agent delegation (`--effort ultra`) | beta — opt-in, model-dependent |
 | Antigravity native push (Cascade Language Server, `ls-push`) | stable — requires an open agy conversation |
 | Identity scoping (`--identity`, per-namespace inbox + `list_agents`) | stable |
@@ -1268,7 +1292,7 @@ Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), 
 - **Single registry.** All agents must connect to the same registry instance. Multi-registry federation is not implemented.
 - **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
 - **Volatile agent registry.** The `AgentStore` is in-memory only. Restarting the registry clears all registered agents and heartbeats — agents re-register automatically on reconnect, but any in-flight state is lost. Only channel messages and ACKs (in `channel_messages`, `channel_acks`, `channel_suppressed_conversations`) are persisted to SQLite.
-- **Codex bridge requires app-server remote TUI or tmux fallback.** The preferred path is `open-agent-bridge codex start` or `codex --remote ws://127.0.0.1:<port>` against the bridge app-server. A plain `codex` session is isolated and cannot receive automatic turn injection. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
+- **Codex native push needs codex-cli ≥ 0.162 and one live session per project.** Older Codex releases run the TUI in-process, so a plain `codex` there cannot receive automatic turn injection — use `oab codex start`. With two live Codex TUIs in the same project, only the newest one receives messages. A resumed old thread loses to a newer thread that is still loaded, until the daemon restarts. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
 - **Claude Code native push is best effort.** It needs Claude Code ≥ 2.1.224 with cross-session messaging on. Claude Code's ingress guard may hold or refuse a peer message depending on the session's permission mode, and the socket returns no confirmation, so `displayed_to_client` means "handed to Claude Code", not "read". Without a socket, live push only works with `oab claude --legacy-channels`; otherwise messages wait in `channel_inbox`.
 - **Codex's sandbox can be blocked by Ubuntu.** With `kernel.apparmor_restrict_unprivileged_userns=1` (the default on Ubuntu ≥ 23.10), bubblewrap cannot set up its network namespace (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). An interactive Codex asks you to run the command outside the sandbox; the bridge thread runs with `approvalPolicy: never`, so its shell commands simply fail and Codex can only answer from what it can reason about without a shell. Check with `codex sandbox linux -- true`; fixing it is an OS change (an AppArmor profile for `bwrap`).
 - **Codex `--effort` is thread-wide.** Codex keeps a turn's reasoning effort for the rest of the thread, so the level applies to every channel message the bridge handles, not to a single task.
