@@ -1254,7 +1254,7 @@ src/
 ## Testing
 
 ```bash
-pnpm run test   # vitest — runs the full suite (60 test files, 420 tests) once
+pnpm run test   # vitest — runs the full suite once (src/**/*.test.ts only)
 pnpm run lint   # biome — lint and style check
 ```
 
@@ -1282,10 +1282,7 @@ Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), 
 
 ## Contributing
 
-1. Fork the repository and create a feature branch.
-2. Run `pnpm install` and `pnpm run build` to verify the build.
-3. Run `pnpm run test` (Vitest) and `pnpm run lint` (Biome) before committing.
-4. Open a pull request describing the change and its motivation.
+Bug reports, ideas and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to report a bug, set up the repo, run the same checks as CI, and open a pull request against `production`.
 
 ---
 
