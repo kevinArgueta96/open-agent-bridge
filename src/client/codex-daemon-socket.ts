@@ -48,6 +48,18 @@ function uuidV7Time(id: string): number {
   return Number.parseInt(id.replace(/-/g, "").slice(0, 12), 16);
 }
 
+/**
+ * True when `codex --version` output names a release whose TUI runs on the
+ * shared app-server daemon (≥ 0.162), i.e. one this module can deliver into.
+ */
+export function codexSupportsDaemon(versionOutput: string | null | undefined): boolean {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput ?? "");
+  // ponytail: unknown version → assume modern; `oab codex start` covers older ones.
+  if (!m) return true;
+  const [major, minor, patch] = m.slice(1).map(Number);
+  return major * 1e6 + minor * 1e3 + patch >= 162_000;
+}
+
 /** The daemon's control socket, or null when no Codex daemon is running. */
 export function codexDaemonSocketPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const home = env.CODEX_HOME ?? join(homedir(), ".codex");

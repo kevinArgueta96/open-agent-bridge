@@ -42,10 +42,10 @@ export function registerCodexCommand(program: Command): void {
   codex
     .command("start")
     .description(
-      "Start Codex with full bidirectional channel bridge in one command. " +
-      "Auto-starts the registry if not running, spawns the app-server bridge " +
-      "(bridge connects directly as a second WS client), then launches the " +
-      "Codex TUI connected directly to the app-server."
+      "Headless Codex bridge: a bridge that owns its own Codex thread answers channel " +
+      "messages even with no TUI open (also the path for codex < 0.162). Starts the " +
+      "registry if needed, spawns the app-server bridge, then a Codex TUI attached to it. " +
+      "On codex ≥ 0.162, plain `codex` already gets messages in the live TUI."
     )
     .option("--project <path>", "Project path", process.cwd())
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")

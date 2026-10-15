@@ -64,21 +64,13 @@ export function buildMcpConfig(opts: BuildMcpConfigOptions = {}): {
  *  Rather than writing TOML ourselves, build the argv for the official
  *  `codex mcp add` CLI so Codex owns its own config format.
  *
- *  That file is GLOBAL, so AGENT_BRIDGE_PROJECT is left out: pinned there, every
- *  Codex session in any directory registered as the project `oab init` ran in.
- *  Codex starts the adapter in the session's cwd, which is the right project. */
+ *  That file is GLOBAL, so no env goes there: a pinned AGENT_BRIDGE_PROJECT made
+ *  every Codex session in any directory register as the project `oab init` ran
+ *  in, and a pinned identity would do the same to the namespace. Codex starts
+ *  the adapter in the session's cwd (the right project); a per-project identity
+ *  goes in that project's `.codex/config.toml` (writeCodexProjectConfig). */
 export function buildCodexMcpAddArgs(entry: McpServerEntry): string[] {
-  return [
-    "mcp",
-    "add",
-    MCP_SERVER_NAME,
-    ...Object.entries(entry.env)
-      .filter(([k]) => k !== "AGENT_BRIDGE_PROJECT")
-      .flatMap(([k, v]) => ["--env", `${k}=${v}`]),
-    "--",
-    entry.command,
-    ...entry.args,
-  ];
+  return ["mcp", "add", MCP_SERVER_NAME, "--", entry.command, ...entry.args];
 }
 
 /**

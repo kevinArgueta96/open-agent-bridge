@@ -97,29 +97,14 @@ describe("writeCodexProjectConfig", () => {
 });
 
 describe("buildCodexMcpAddArgs", () => {
-  it("builds a codex mcp add argv with env flags before the -- separator, never pinning the project", () => {
-    // ~/.codex/config.toml is global: a pinned project would apply to every Codex session.
+  it("never pins project or identity in Codex's global config", () => {
+    // ~/.codex/config.toml applies to every Codex session on the machine.
     const args = buildCodexMcpAddArgs({
       command: "open-agent-bridge",
       args: ["mcp", "start"],
       env: { AGENT_BRIDGE_PROJECT: "/my proj", AGENT_BRIDGE_IDENTITY: "ril" },
     });
-    expect(args).toEqual([
-      "mcp",
-      "add",
-      MCP_SERVER_NAME,
-      "--env",
-      "AGENT_BRIDGE_IDENTITY=ril",
-      "--",
-      "open-agent-bridge",
-      "mcp",
-      "start",
-    ]);
-  });
-
-  it("emits no --env flags when env is empty", () => {
-    const args = buildCodexMcpAddArgs({ command: "node", args: ["cli.js", "mcp", "start"], env: {} });
-    expect(args).toEqual(["mcp", "add", MCP_SERVER_NAME, "--", "node", "cli.js", "mcp", "start"]);
+    expect(args).toEqual(["mcp", "add", MCP_SERVER_NAME, "--", "open-agent-bridge", "mcp", "start"]);
   });
 });
 

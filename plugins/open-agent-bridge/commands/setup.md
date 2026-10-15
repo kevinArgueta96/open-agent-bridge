@@ -31,5 +31,14 @@ fix anything before reporting, except where a step says you may offer.
    - If it is missing, the MCP server in this session has not connected. Tell the
      user to restart the session so the plugin's MCP server starts.
 
+5. **Live delivery** — run `open-agent-bridge doctor` and report its
+   `client: claude (native push)` / `client: codex (native push)` lines.
+   - Claude Code ≥ 2.1.224 and codex ≥ 0.162 get incoming messages as a new
+     turn in the live session, with no extra flags or daemons.
+   - Older Claude Code needs `oab claude --legacy-channels`; older Codex needs
+     `oab codex start`.
+   - Report any failed doctor check verbatim, including its suggested fix
+     (for example a Codex config pinned to one project).
+
 Close with the single most important next action, or "Everything is ready." when
-all four checks pass.
+all five checks pass.

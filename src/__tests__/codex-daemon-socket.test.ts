@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { codexDaemonSocketPath, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
+import { codexDaemonSocketPath, codexSupportsDaemon, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
 
 // A fake app-server daemon on a socket we own — never the user's real one.
 const T0 = Date.UTC(2026, 9, 15, 21, 0, 0);
@@ -132,6 +132,16 @@ describe("deliverViaCodexDaemon", () => {
 
   it("resolves false without a daemon socket", async () => {
     await expect(deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: null })).resolves.toBe(false);
+  });
+});
+
+describe("codexSupportsDaemon", () => {
+  it("gates on codex-cli 0.162 and assumes modern when unparseable", () => {
+    expect(codexSupportsDaemon("codex-cli 0.162.1")).toBe(true);
+    expect(codexSupportsDaemon("codex-cli 0.162.0")).toBe(true);
+    expect(codexSupportsDaemon("codex-cli 0.146.0")).toBe(false);
+    expect(codexSupportsDaemon("codex-cli 1.0.0")).toBe(true);
+    expect(codexSupportsDaemon(undefined)).toBe(true);
   });
 });
 
