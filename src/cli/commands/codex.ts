@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import type { Command } from "commander";
+import { type Command, Option } from "commander";
 import chalk from "chalk";
 import { CodexTmuxBridgeService } from "../../client/codex-tmux-bridge-service.js";
 import { detectCurrentTmuxBinding } from "../../client/codex-tmux.js";
@@ -11,6 +11,7 @@ import { readCurrentCodexSession, writeCurrentCodexSession } from "../../client/
 import { CodexAppServerBridge } from "../../client/codex-app-server-bridge.js";
 import { RegistryServer } from "../../registry/server.js";
 import { RegistryClient } from "../../client/registry-client.js";
+import { buildMcpServerEntry, writeCodexProjectConfig } from "../lib/mcp-config.js";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -28,6 +29,12 @@ async function findAvailablePort(startPort: number, maxAttempts = 20): Promise<n
   throw new Error(`No available port found in range ${startPort}–${startPort + maxAttempts - 1}`);
 }
 
+// Reasoning efforts codex-cli 0.146 knows; the model must also advertise the
+// one picked, or turn/start is rejected (and the message is acked `failed`).
+const effortOption = () =>
+  new Option("--effort <level>", "Reasoning effort for channel turns; `ultra` = proactive sub-agent delegation")
+    .choices(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
 export function registerCodexCommand(program: Command): void {
   const codex = program.command("codex").description("Codex-specific utilities");
 
@@ -35,15 +42,16 @@ export function registerCodexCommand(program: Command): void {
   codex
     .command("start")
     .description(
-      "Start Codex with full bidirectional channel bridge in one command. " +
-      "Auto-starts the registry if not running, spawns the app-server bridge " +
-      "(bridge connects directly as a second WS client), then launches the " +
-      "Codex TUI connected directly to the app-server."
+      "Headless Codex bridge: a bridge that owns its own Codex thread answers channel " +
+      "messages even with no TUI open (also the path for codex < 0.162). Starts the " +
+      "registry if needed, spawns the app-server bridge, then a Codex TUI attached to it. " +
+      "On codex ≥ 0.162, plain `codex` already gets messages in the live TUI."
     )
     .option("--project <path>", "Project path", process.cwd())
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
+    .addOption(effortOption())
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const registryUrl: string = options.registryUrl;
@@ -74,12 +82,27 @@ export function registerCodexCommand(program: Command): void {
         console.log(chalk.green("✓") + " Embedded registry started on :" + registryPort);
       }
 
+      // 1b. Give the MCP client inside Codex the same identity as the bridge.
+      //     A Codex session registers two entries; `--identity` alone only
+      //     reached the bridge, leaving the inner client in `global` and the
+      //     pair split across the identity wall.
+      if (options.identity && options.identity !== "global") {
+        const entry = buildMcpServerEntry({ projectPath, identity: options.identity });
+        const { path, written } = writeCodexProjectConfig(projectPath, entry);
+        console.log(
+          written
+            ? chalk.green("✓") + ` Identity ${options.identity} declared for Codex in ${path}`
+            : chalk.dim(`  Codex MCP already declared in ${path} — leaving it as is`),
+        );
+      }
+
       // 2. Start the bridge (spawns app-server, bridge connects directly as second WS client)
       const bridge = new CodexAppServerBridge({
         registryUrl,
         projectPath,
         appServerPort,
         identity: options.identity,
+        effort: options.effort,
       });
 
       try {
@@ -101,10 +124,20 @@ export function registerCodexCommand(program: Command): void {
       }) as typeof process.stderr.write;
       console.log(chalk.dim(`  Logs: ${logFile}\n`));
 
-      // 4. Spawn codex TUI directly to the app-server (no proxy)
+      // 4. Spawn codex TUI directly to the app-server (no proxy).
+      //    Identity rides in the environment exactly as `oab claude` does: a
+      //    Codex session registers TWO entries — this bridge and the MCP client
+      //    running inside Codex — and `--identity` only reached the bridge.
+      //    Leaving the inner client in `global` split the pair across two
+      //    namespaces, and identity is a hard wall, so the pairing that lets a
+      //    message addressed to the inner client reach the bridge broke.
+      const tuiEnv: NodeJS.ProcessEnv = { ...process.env, AGENT_BRIDGE_PROJECT: projectPath };
+      if (options.identity) tuiEnv.AGENT_BRIDGE_IDENTITY = options.identity;
+
       const tui = spawn("codex", ["--remote", appServerWsUrl], {
         stdio: "inherit",
         cwd: projectPath,
+        env: tuiEnv,
       });
 
       const cleanup = async () => {
@@ -139,6 +172,7 @@ export function registerCodexCommand(program: Command): void {
     .option("--project <path>", "Project path for client registration (default: cwd)")
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
+    .addOption(effortOption())
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const requestedPort = Number(options.appServerPort);
@@ -152,6 +186,7 @@ export function registerCodexCommand(program: Command): void {
         projectPath,
         appServerPort,
         identity: options.identity,
+        effort: options.effort,
       });
 
       console.log(chalk.bold("\n[open-agent-bridge] Codex app-server bridge\n"));

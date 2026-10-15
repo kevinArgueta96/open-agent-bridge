@@ -54,7 +54,8 @@ pnpm install && pnpm run build:all && npm install -g .
 ```bash
 cd /ruta/a/tu/proyecto
 oab init                     # wizard: identity + clientes → .mcp.json + registry
-oab claude --identity dev    # lanza Claude cableado al bridge
+claude                       # o `codex`: los mensajes llegan como turno nuevo en la sesión viva
+oab doctor                   # confirma la entrega nativa de cada cliente
 oab status                   # estado del hub
 oab down                     # apaga el registry cuando termines
 ```
@@ -77,7 +78,9 @@ oab down                     # apaga el registry cuando termines
 
 ### `init`
 
-Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity reusando sus instaladores), registra el MCP en **Codex** vía `codex mcp add` (Codex ignora `.mcp.json` — solo carga servidores desde `~/.codex/config.toml`; el registro es idempotente: hace `remove` antes de `add`), e imprime los próximos pasos por cliente.
+Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity reusando sus instaladores), registra el MCP en **Codex** vía `codex mcp add` (Codex ignora `.mcp.json` — solo carga servidores desde `~/.codex/config.toml`; el registro es idempotente: hace `remove` antes de `add`), e imprime los próximos pasos por cliente: `claude` y `codex` a secas.
+
+`~/.codex/config.toml` es **global**, así que ahí solo va el comando, sin proyecto ni identity: Codex arranca el adapter en el directorio de cada sesión, que ya identifica el proyecto. Una identity distinta de `global` se escribe en el `.codex/config.toml` del proyecto (Codex lo lee si el proyecto es *trusted*). Las versiones anteriores fijaban `AGENT_BRIDGE_PROJECT` en el config global y toda sesión de Codex quedaba registrada como ese proyecto: `oab doctor` lo detecta y volver a correr `oab init --client codex` lo reescribe.
 
 ```
 oab init [options]
@@ -85,7 +88,7 @@ oab init [options]
 
 | Opción | Default | Descripción |
 | :--- | :--- | :--- |
-| `--identity <id>` | `global` | Namespace de canal a inyectar en `.mcp.json`. |
+| `--identity <id>` | `global` | Namespace de canal. Va a `.mcp.json` y, con Codex, al `.codex/config.toml` del proyecto. |
 | `--client <name>` | `[]` | Cliente a configurar: `claude\|codex\|opencode\|antigravity`. Repetible o separado por comas. |
 | `--project <path>` | cwd | Proyecto sobre el que operar. |
 | `-p, --port <number>` | `4999` | Puerto del registry. |
@@ -137,7 +140,7 @@ oab status [options]
 
 ### `claude`
 
-Lanza Claude Code totalmente cableado en un comando: asegura el registry (lo arranca si hace falta), escribe `.mcp.json` si falta, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude --dangerously-load-development-channels server:open-agent-bridge`. **No** detiene el registry al salir (es un daemon compartido). Flags desconocidos se pasan tal cual a `claude`.
+Atajo opcional — con Claude Code ≥ 2.1.224 alcanza con `claude` a secas en un proyecto con `.mcp.json` (o el plugin). Lanza Claude Code totalmente cableado en un comando: asegura el registry (lo arranca si hace falta), escribe `.mcp.json` si falta, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude`. La entrega push usa el inbox socket nativo de Claude Code (≥ 2.1.224); el flag `--dangerously-load-development-channels server:open-agent-bridge` solo se agrega en versiones anteriores o con `--legacy-channels`. **No** detiene el registry al salir (es un daemon compartido). Flags desconocidos se pasan tal cual a `claude`.
 
 ```
 oab claude [options] [-- <flags de claude>]
@@ -148,6 +151,7 @@ oab claude [options] [-- <flags de claude>]
 | `--identity <id>` | `global` | Namespace de canal. |
 | `--project <path>` | cwd | Proyecto. |
 | `-p, --port <number>` | `4999` | Puerto del registry. |
+| `--legacy-channels` | auto (solo CC < 2.1.224) | Agrega `--dangerously-load-development-channels server:open-agent-bridge` (push vía `<channel>`). |
 
 ```bash
 oab claude --identity dev
@@ -156,7 +160,7 @@ oab claude --identity ticket-42 --project /ruta/al/proyecto
 
 ### `doctor`
 
-Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`, opcionales). Termina con un resumen.
+Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`, opcionales). Para Claude Code y Codex además informa si su versión tiene **entrega nativa** (Claude Code ≥ 2.1.224 por el inbox socket; codex ≥ 0.162 por el app-server daemon) o qué fallback usar (`oab claude --legacy-channels` / `oab codex start`). Con Codex en PATH verifica que el MCP esté registrado en `~/.codex/config.toml` (o el plugin `oab`) y marca como fallo un config global que fije `AGENT_BRIDGE_PROJECT`. Termina con un resumen.
 
 ```
 oab doctor [options]
@@ -442,11 +446,11 @@ oab prune ril-scraper        # poda una sesión específica por nombre
 
 ### `codex`
 
-Utilidades específicas de Codex. El bridge inyecta mensajes de canal directo en el app-server de Codex vía `turn/start`.
+Utilidades específicas de Codex. Con codex ≥ 0.162 **no hacen falta**: `codex` a secas recibe los mensajes como turno nuevo en la TUI viva (el adapter MCP los entrega por el app-server daemon de Codex). Estos comandos quedan para Codex sin TUI (*headless*) o versiones anteriores: un bridge propio inyecta los mensajes en su thread vía `turn/start` y reenvía la respuesta final.
 
 #### `codex start`
 
-Arranca Codex con el bridge bidireccional completo en un comando: auto-arranca el registry si no corre, levanta el bridge del app-server (conectado como segundo cliente WS) y lanza la TUI de Codex conectada al app-server.
+Codex *headless*: auto-arranca el registry si no corre, levanta un bridge dueño de su propio thread de Codex (responde aunque no haya TUI abierta) y lanza una TUI de Codex conectada a ese app-server. Es el camino para codex < 0.162.
 
 | Opción | Default | Descripción |
 | :--- | :--- | :--- |
@@ -454,6 +458,7 @@ Arranca Codex con el bridge bidireccional completo en un comando: auto-arranca e
 | `--app-server-port <number>` | `4500` | Puerto inicial del app-server (auto-incrementa si está ocupado). |
 | `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
 | `--identity <id>` | `global` | Namespace de canal. |
+| `--effort <level>` | default del modelo | Reasoning effort de los turnos del canal (`minimal`…`ultra`); `ultra` = delegación proactiva a sub-agentes. Pegajoso para todo el thread del bridge. |
 
 ```bash
 oab codex start --identity dev
@@ -469,6 +474,7 @@ Arranca el daemon del bridge del app-server de Codex (sin lanzar la TUI). Luego 
 | `--project <path>` | cwd | Proyecto para el registro del cliente. |
 | `--app-server-port <number>` | `4500` | Puerto inicial del app-server. |
 | `--identity <id>` | `global` | Namespace de canal. |
+| `--effort <level>` | default del modelo | Reasoning effort de los turnos del canal (`minimal`…`ultra`); `ultra` = delegación proactiva a sub-agentes. Pegajoso para todo el thread del bridge. |
 
 #### `codex tmux-bind`
 
@@ -605,12 +611,14 @@ oab claude --identity ticket-101   # terminal 1
 oab claude --identity ticket-102   # terminal 2  (no se ven entre sí)
 ```
 
+(`oab claude --identity` setea la identity solo para esa sesión; `oab init --identity` la deja escrita en el proyecto para usar `claude` a secas.)
+
 **Claude ↔ Codex en el mismo canal:**
 
 ```bash
-oab up
-oab claude --identity dev          # terminal 1
-oab codex start --identity dev     # terminal 2  (comparten canal "dev")
+oab init --yes --client claude,codex --identity dev
+claude                             # terminal 1
+codex                              # terminal 2  (comparten canal "dev"; codex ≥ 0.162)
 ```
 
 **Config sin instalación global (modo local), para commitear o compartir:**
@@ -637,6 +645,8 @@ oab down && oab up
 | Dashboard en blanco / error de MIME en el CSS | Faltaba `base: /dashboard/` en `dashboard/vite.config.ts` (ya corregido). Recompilá con `pnpm run build:dashboard` y hard-reload del navegador. |
 | `claude` no arranca desde `oab claude` | `claude` no está en PATH. Instalá Claude Code o agregalo al PATH (`oab doctor` lo verifica). |
 | Las herramientas MCP no aparecen en Claude | Reiniciá Claude Code tras escribir `.mcp.json`; verificá con `oab mcp status` y `oab doctor`. |
+| Codex se registra con el proyecto equivocado (`oab list`) | Un `oab init` viejo fijó `AGENT_BRIDGE_PROJECT` en `~/.codex/config.toml` (`oab doctor` lo marca). Corré `oab init --client codex` y abrí una sesión nueva de Codex: el daemon levanta un adapter por thread, así que cerrar la TUI no recarga el config de los threads viejos. |
+| Un mensaje a Codex no aparece en la TUI | `oab doctor` debe mostrar `client: codex (native push)` en verde (codex ≥ 0.162). Si había otra TUI de Codex abierta en el mismo proyecto, recibe la más nueva. Para versiones viejas usá `oab codex start`. |
 | `.mcp.json` con ruta absoluta de otra máquina | Regeneralo: `oab mcp config --write` (modo `linked`) usa el binario por nombre, sin rutas frágiles. |
 
 ---

@@ -1,0 +1,28 @@
+{
+  "description": "Keeps the local registry running while a session is open, and reaps its entry when the session ends.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "open-agent-bridge up >/dev/null 2>&1 || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "open-agent-bridge prune >/dev/null 2>&1 || true",
+            "_comment": "3s, not more: Codex clamps SessionEnd hooks to 3s and warns about anything higher. A local prune is a couple of HTTP calls, so it fits.",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to .mcp.json, or just run `oab init`, which writes it for you with the right absolute paths. AGENT_BRIDGE_IDENTITY is optional: sessions only see peers that share their identity, so omit it unless you want an isolated namespace.",
+  "mcpServers": {
+    "open-agent-bridge": {
+      "command": "open-agent-bridge",
+      "args": ["mcp", "start"],
+      "env": {
+        "AGENT_BRIDGE_PROJECT": "/absolute/path/to/your/project"
+      }
+    }
+  }
+}

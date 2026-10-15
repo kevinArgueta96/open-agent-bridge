@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "open-agent-bridge",
+  "owner": {
+    "name": "kargueta",
+    "email": "kargueta@osigu.com"
+  },
+  "metadata": {
+    "description": "Local agent communication hub — A2A + MCP + WebSocket.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "oab",
+      "description": "Message your other local Claude Code, Codex, OpenCode and Antigravity sessions.",
+      "version": "0.1.0",
+      "author": {
+        "name": "kargueta"
+      },
+      "source": "./plugins/open-agent-bridge",
+      "category": "agents",
+      "homepage": "https://github.com/kevinArgueta96/open-agent-bridge"
+    }
+  ]
+}

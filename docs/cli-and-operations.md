@@ -38,7 +38,7 @@ pnpm install && pnpm run build:all && npm install -g .
 
 ### `init`
 
-Wizard de configuración para un proyecto. Detecta el cwd, pregunta `identity` y clientes, escribe/mergea `.mcp.json` (inyectando `AGENT_BRIDGE_IDENTITY`), levanta el registry como daemon y configura clientes de plugin (OpenCode/Antigravity).
+Wizard de configuración para un proyecto. Detecta el cwd, pregunta `identity` y clientes, escribe/mergea `.mcp.json` (inyectando `AGENT_BRIDGE_IDENTITY`), levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity) y registra el MCP en Codex (`codex mcp add` global sin proyecto ni identity; la identity va al `.codex/config.toml` del proyecto). Después alcanza con `claude` y `codex` a secas: los dos reciben los mensajes como turno nuevo en la sesión viva.
 
 Opciones: `--identity <id>`, `--client <name>` (repetible o separado por comas), `--project <path>`, `-p, --port <number>`, `--mode <linked|local>`, `-y, --yes` (no interactivo).
 
@@ -59,7 +59,7 @@ oab down                  # detiene el daemon
 
 ### `claude`
 
-Lanza Claude Code cableado al bridge: asegura registry + `.mcp.json`, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude --dangerously-load-development-channels server:open-agent-bridge`. Flags extra se pasan tal cual a `claude`.
+Atajo opcional (con Claude Code ≥ 2.1.224 alcanza `claude` a secas). Lanza Claude Code cableado al bridge: asegura registry + `.mcp.json`, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude` (sin flag dangerous: la entrega usa el inbox socket nativo de Claude Code ≥ 2.1.224; `--legacy-channels` fuerza `--dangerously-load-development-channels server:open-agent-bridge`). Flags extra se pasan tal cual a `claude`.
 
 ```bash
 oab claude --identity dev [--project <path>] [--port 4999] [-- <flags de claude>]
@@ -67,7 +67,7 @@ oab claude --identity dev [--project <path>] [--port 4999] [-- <flags de claude>
 
 ### `doctor`
 
-Diagnóstico sin abortar: Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`). Soporta `--json`.
+Diagnóstico sin abortar: Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, binarios de cliente (`claude`/`codex`/`opencode`/`agy`), entrega nativa por versión (Claude Code ≥ 2.1.224, codex ≥ 0.162) y registro del MCP en Codex, incluido el aviso de un `AGENT_BRIDGE_PROJECT` fijado en el config global. Soporta `--json`.
 
 ```bash
 oab doctor

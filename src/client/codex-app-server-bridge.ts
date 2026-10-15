@@ -18,6 +18,8 @@ export interface CodexAppServerBridgeOptions {
   identity?: string;
   /** Port for the codex app-server process. Default: 4500 */
   appServerPort?: number;
+  /** Reasoning effort for channel turns; `ultra` = proactive sub-agent delegation. */
+  effort?: string;
 }
 
 interface QueuedMessage {
@@ -31,6 +33,8 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5_000;
 const QUEUE_STALE_CHECK_MS = 5_000;
 const NO_TUI_QUEUE_TIMEOUT_MS = 30_000;
+const MAX_APP_SERVER_RESTARTS = 5;
+const MAX_CLIENT_RECONNECTS = 5;
 
 /**
  * Full Codex app-server bridge daemon.
@@ -79,6 +83,9 @@ export class CodexAppServerBridge extends EventEmitter {
    *  attached to the app-server thread yet. */
   private queueHealthTimer: NodeJS.Timeout | null = null;
   private noTuiWarningTimer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private appServerRestarts = 0;
+  private clientReconnects = 0;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
@@ -89,6 +96,11 @@ export class CodexAppServerBridge extends EventEmitter {
 
     this.client = new CodexAppServerClient({
       appServerUrl: `ws://127.0.0.1:${this.appServerPort}`,
+      cwd: this.projectPath,
+      // Channel traffic is answered in a bridge-owned thread, so we declare its
+      // permissions explicitly instead of inheriting whatever the TUI negotiated.
+      sandbox: "read-only",
+      effort: options.effort ?? null,
     });
 
     this.channelTransport = new ChannelTransport({ registryUrl: this.registryUrl });
@@ -144,8 +156,13 @@ export class CodexAppServerBridge extends EventEmitter {
     this.scheduleNoTuiWarning();
 
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;
-    console.error(`[Bridge] Ready. Start Codex TUI with:`);
-    console.error(`  codex --remote ${appServerWsUrl}`);
+    if (this.client.ownsThread) {
+      console.error(`[Bridge] Ready — answering channel messages in thread ${this.client.currentThreadId}.`);
+      console.error(`  Attach a TUI any time with: codex --remote ${appServerWsUrl}`);
+    } else {
+      console.error(`[Bridge] Ready. Start Codex TUI with:`);
+      console.error(`  codex --remote ${appServerWsUrl}`);
+    }
   }
 
   private startPeriodicSync(periodMs = 5 * 60_000): void {
@@ -163,6 +180,8 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   private scheduleNoTuiWarning(delayMs = 10_000): void {
+    // Owning a thread means delivery never depends on a TUI — nothing to warn about.
+    if (this.client.ownsThread) return;
     if (this.noTuiWarningTimer) return;
     this.noTuiWarningTimer = setTimeout(() => {
       this.noTuiWarningTimer = null;
@@ -176,6 +195,15 @@ export class CodexAppServerBridge extends EventEmitter {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    // Cancel a turn we started rather than leaving Codex burning tokens on an
+    // answer nobody will read.
+    if (this.client.turnInProgress) {
+      await this.client.interruptTurn();
+    }
     if (this.periodicSyncTimer) {
       clearInterval(this.periodicSyncTimer);
       this.periodicSyncTimer = null;
@@ -206,12 +234,26 @@ export class CodexAppServerBridge extends EventEmitter {
     const listenUrl = `ws://127.0.0.1:${this.appServerPort}`;
     console.error(`[Bridge] Spawning codex app-server on ${listenUrl}`);
 
+    // The app-server — not the TUI — is what launches Codex's MCP servers, so
+    // this is where our identity has to be injected. A Codex session registers
+    // two entries (this bridge and the MCP client inside Codex); without this
+    // the inner client stayed in `global` while the bridge sat in the requested
+    // namespace, splitting the pair across the identity wall.
+    const appServerEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      AGENT_BRIDGE_PROJECT: this.projectPath,
+    };
+    if (this.identity && this.identity !== "global") {
+      appServerEnv.AGENT_BRIDGE_IDENTITY = this.identity;
+    }
+
     this.appServerProcess = spawn(
       "codex",
       ["app-server", "--enable", "tui_app_server", "--listen", listenUrl],
       {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: this.projectPath,
+        env: appServerEnv,
       },
     );
 
@@ -222,12 +264,91 @@ export class CodexAppServerBridge extends EventEmitter {
       process.stderr.write(`[app-server] ${d.toString()}`);
     });
     this.appServerProcess.on("exit", (code) => {
-      if (!this.stopped) {
-        console.error(`[Bridge] app-server exited (code ${code ?? "unknown"})`);
-      }
+      if (this.stopped) return;
+      console.error(`[Bridge] app-server exited (code ${code ?? "unknown"})`);
+      this.scheduleAppServerRestart();
     });
 
     await this.waitForAppServer(listenUrl);
+  }
+
+  /**
+   * Reconnect after the WebSocket drops while the app-server is still alive —
+   * which happens in practice, e.g. when a TUI attaches. Previously the bridge
+   * only logged the disconnect and stayed registered as healthy while being
+   * unable to deliver anything.
+   *
+   * Only handles the socket: if the process itself died, its `exit` handler
+   * owns the recovery and respawns, so we stay out of its way.
+   */
+  private scheduleClientReconnect(): void {
+    if (this.stopped || this.restartTimer) return;
+    const processAlive =
+      this.appServerProcess && !this.appServerProcess.killed && this.appServerProcess.exitCode === null;
+    if (!processAlive) return; // the exit handler will respawn it
+
+    if (this.clientReconnects >= MAX_CLIENT_RECONNECTS) {
+      console.error(`[Bridge] gave up reconnecting to the app-server after ${this.clientReconnects} attempts`);
+      return;
+    }
+    const attempt = ++this.clientReconnects;
+    const delayMs = Math.min(500 * 2 ** (attempt - 1), 10_000);
+    console.error(`[Bridge] reconnecting to app-server in ${delayMs}ms (attempt ${attempt}/${MAX_CLIENT_RECONNECTS})`);
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void (async () => {
+        if (this.stopped) return;
+        try {
+          await this.client.connect();
+          this.clientReconnects = 0;
+          console.error("[Bridge] reconnected to app-server");
+          this.drainQueue();
+        } catch (err) {
+          console.error(`[Bridge] reconnect failed: ${err instanceof Error ? err.message : err}`);
+          this.scheduleClientReconnect();
+        }
+      })();
+    }, delayMs);
+  }
+
+  /**
+   * Bring the app-server back after an unexpected exit. Without this the bridge
+   * stayed alive but permanently unable to deliver: it kept accepting channel
+   * messages into its queue with no runtime behind them.
+   *
+   * Reconnecting re-runs `thread/start`, so the bridge owns a fresh thread —
+   * the previous one died with the process anyway.
+   */
+  private scheduleAppServerRestart(): void {
+    if (this.stopped || this.restartTimer) return;
+    if (this.appServerRestarts >= MAX_APP_SERVER_RESTARTS) {
+      console.error(
+        `[Bridge] app-server exited ${this.appServerRestarts} times — giving up. ` +
+          `Restart the bridge once Codex is healthy.`,
+      );
+      return;
+    }
+    const attempt = ++this.appServerRestarts;
+    const delayMs = Math.min(1_000 * 2 ** (attempt - 1), 15_000);
+    console.error(`[Bridge] restarting app-server in ${delayMs}ms (attempt ${attempt}/${MAX_APP_SERVER_RESTARTS})`);
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void (async () => {
+        if (this.stopped) return;
+        try {
+          this.client.disconnect();
+          await this.spawnAppServer();
+          await this.client.connect();
+          console.error("[Bridge] app-server restarted and reconnected");
+          this.drainQueue();
+        } catch (err) {
+          console.error(`[Bridge] app-server restart failed: ${err instanceof Error ? err.message : err}`);
+          this.scheduleAppServerRestart();
+        }
+      })();
+    }, delayMs);
   }
 
   private async waitForAppServer(wsUrl: string, maxWaitMs = 15_000): Promise<void> {
@@ -270,8 +391,22 @@ export class CodexAppServerBridge extends EventEmitter {
       void this.sendReplyToRegistry(text, ctx);
     });
 
+    // The message was already acked displayed_to_client when turn/start went
+    // out; without this a rejected or failed turn leaves the sender waiting forever.
+    this.client.on("injectionRejected", (ctx, reason) => {
+      void this.channelTransport.postChannelAck({
+        conversationId: ctx.conversationId,
+        messageId: ctx.messageId,
+        state: "failed",
+        actorId: this.clientAgentId ?? "codex-app-bridge",
+        actorType: "bridge",
+        detail: `Codex could not run the turn: ${reason}`,
+      });
+    });
+
     this.client.on("disconnected", () => {
       console.error(`[Bridge] App-server client disconnected`);
+      this.scheduleClientReconnect();
     });
   }
 
@@ -448,7 +583,7 @@ export class CodexAppServerBridge extends EventEmitter {
       expectsResponse: message.expectsResponse === true,
     };
 
-    const prompt = buildInjectionPrompt(message);
+    const prompt = buildInjectionPrompt(message, { relayed: true });
     const injected = this.client.injectMessage(prompt, ctx);
 
     if (!injected) {

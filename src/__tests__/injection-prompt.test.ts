@@ -78,6 +78,30 @@ describe("buildInjectionPrompt — reply required", () => {
     // the rendered template, so we match across newlines.
     expect(prompt).toMatch(/NOT[\s\S]*message_client_session/i);
   });
+
+  it("frames the sender as a peer without the user's authority", () => {
+    expect(prompt).toContain("This comes from another agent, not from your user.");
+  });
+});
+
+describe("buildInjectionPrompt — relayed (Codex bridge)", () => {
+  it("asks for the answer in the final message instead of a reply tool call", () => {
+    const prompt = buildInjectionPrompt(makeMessage({ expectsResponse: true }), { relayed: true });
+    expect(prompt).toContain("Do NOT call a reply tool.");
+    expect(prompt).not.toContain("agentId:");
+    expect(prompt).toContain("This comes from another agent, not from your user.");
+  });
+});
+
+describe("buildInjectionPrompt — replyTool", () => {
+  it("names the reply tool the way the receiving client knows it", () => {
+    const opts = { replyTool: "reply (open-agent-bridge MCP tool)" };
+    const reply = buildInjectionPrompt(makeMessage({ expectsResponse: true }), opts);
+    const info = buildInjectionPrompt(makeMessage({ expectsResponse: false }), opts);
+    expect(reply).toContain("  reply (open-agent-bridge MCP tool)\n    agentId:");
+    expect(info).toMatch(/do NOT call\s+reply \(open-agent-bridge MCP tool\)/);
+    expect(reply + info).not.toContain("agent-bridge.reply");
+  });
 });
 
 describe("buildInjectionPrompt — informational (no reply)", () => {

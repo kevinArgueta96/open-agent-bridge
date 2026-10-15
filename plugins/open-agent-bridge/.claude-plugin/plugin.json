@@ -1,0 +1,17 @@
+{
+  "name": "oab",
+  "version": "0.1.0",
+  "description": "Local agent communication hub — talk to your other Claude, Codex, OpenCode and Antigravity sessions from this one.",
+  "author": {
+    "name": "kargueta"
+  },
+  "homepage": "https://github.com/kevinArgueta96/open-agent-bridge",
+  "repository": "https://github.com/kevinArgueta96/open-agent-bridge",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "channel",
+    "a2a",
+    "multi-agent"
+  ]
+}

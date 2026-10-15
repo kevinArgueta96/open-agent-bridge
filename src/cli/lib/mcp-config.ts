@@ -1,8 +1,8 @@
 // Build and write the .mcp.json entry that wires open-agent-bridge into an MCP
 // client (Claude Code, etc.). Centralized here so `mcp config`, `init`, and the
 // launchers all produce identical, correct configs.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { resolveCliEntry, isOnPath } from "./runtime.js";
 
 export const MCP_SERVER_NAME = "open-agent-bridge";
@@ -62,17 +62,56 @@ export function buildMcpConfig(opts: BuildMcpConfigOptions = {}): {
 
 /** Codex ignores .mcp.json — it only loads MCP servers from ~/.codex/config.toml.
  *  Rather than writing TOML ourselves, build the argv for the official
- *  `codex mcp add` CLI so Codex owns its own config format. */
+ *  `codex mcp add` CLI so Codex owns its own config format.
+ *
+ *  That file is GLOBAL, so no env goes there: a pinned AGENT_BRIDGE_PROJECT made
+ *  every Codex session in any directory register as the project `oab init` ran
+ *  in, and a pinned identity would do the same to the namespace. Codex starts
+ *  the adapter in the session's cwd (the right project); a per-project identity
+ *  goes in that project's `.codex/config.toml` (writeCodexProjectConfig). */
 export function buildCodexMcpAddArgs(entry: McpServerEntry): string[] {
-  return [
-    "mcp",
-    "add",
-    MCP_SERVER_NAME,
-    ...Object.entries(entry.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
-    "--",
-    entry.command,
-    ...entry.args,
-  ];
+  return ["mcp", "add", MCP_SERVER_NAME, "--", entry.command, ...entry.args];
+}
+
+/**
+ * Give the MCP client that runs *inside* Codex the same channel identity as the
+ * bridge, by declaring it in the project-level `.codex/config.toml`.
+ *
+ * This is the Codex analogue of writing `.mcp.json` for Claude Code. It cannot
+ * be done with an environment variable: Codex builds the environment of its MCP
+ * servers from their declaration and does NOT pass its own through, so an
+ * `AGENT_BRIDGE_IDENTITY` exported around `codex` never reaches them. Without
+ * this the bridge sat in the requested namespace while the inner client stayed
+ * in `global`, splitting the pair across the identity hard wall.
+ *
+ * Project-level, not `~/.codex/config.toml`: identity is a per-project choice,
+ * and the user's global Codex config is not ours to rewrite on every launch.
+ * Like `oab claude`, an existing declaration is left alone.
+ */
+export function writeCodexProjectConfig(
+  projectPath: string,
+  entry: McpServerEntry,
+  serverName = MCP_SERVER_NAME,
+): { path: string; written: boolean } {
+  const path = resolve(projectPath, ".codex", "config.toml");
+  const section = `[mcp_servers.${serverName}]`;
+  const existing = existsSync(path) ? readFileSync(path, "utf-8") : "";
+
+  if (existing.includes(section)) return { path, written: false };
+
+  const env = Object.entries(entry.env)
+    .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
+    .join(", ");
+  const block =
+    `${section}\n` +
+    `command = ${JSON.stringify(entry.command)}\n` +
+    `args = [${entry.args.map((a) => JSON.stringify(a)).join(", ")}]\n` +
+    (env ? `env = { ${env} }\n` : "");
+
+  mkdirSync(dirname(path), { recursive: true });
+  const separator = existing && !existing.endsWith("\n\n") ? (existing.endsWith("\n") ? "\n" : "\n\n") : "";
+  writeFileSync(path, existing + separator + block, "utf-8");
+  return { path, written: true };
 }
 
 interface McpConfigFile {

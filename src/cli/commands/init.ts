@@ -13,6 +13,7 @@ import { ensureRegistry, resolveCliEntry, DEFAULT_REGISTRY_PORT } from "../lib/r
 import {
   buildMcpServerEntry,
   buildCodexMcpAddArgs,
+  writeCodexProjectConfig,
   writeMcpConfig,
   defaultMcpMode,
   MCP_SERVER_NAME,
@@ -116,6 +117,13 @@ export function registerInitCommand(program: Command): void {
               `Could not register with Codex — is \`codex\` on PATH? Run manually:\n  codex ${buildCodexMcpAddArgs(entry).map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ")}`,
             );
           }
+          // The global entry carries no identity (it would apply to every Codex
+          // session); a project's namespace lives in its own .codex/config.toml.
+          if (identity !== "global") {
+            const { path, written } = writeCodexProjectConfig(projectPath, entry);
+            if (written) ok(`Codex identity ${identity} declared ${chalk.dim(`(${path})`)}`);
+            else warn(`${path} already declares ${MCP_SERVER_NAME} — left as is; check its AGENT_BRIDGE_IDENTITY`);
+          }
         }
         if (client === "opencode" || client === "antigravity") {
           try {
@@ -130,11 +138,14 @@ export function registerInitCommand(program: Command): void {
         }
       }
 
-      // 4. Tailored next steps.
+      // 4. Tailored next steps. Both CLIs deliver natively now, so the plain
+      // command is the whole setup; the identity already rides in the config.
       const idFlag = identity !== "global" ? ` --identity ${identity}` : "";
       const lines: string[] = [];
-      if (clients.includes("claude")) lines.push(`Claude Code:  ${chalk.cyan(`oab claude${idFlag}`)}`);
-      if (clients.includes("codex")) lines.push(`Codex:        ${chalk.cyan(`oab codex start${idFlag}`)}`);
+      if (clients.includes("claude"))
+        lines.push(`Claude Code:  ${chalk.cyan("claude")}  ${chalk.dim("(Claude Code < 2.1.224: oab claude --legacy-channels)")}`);
+      if (clients.includes("codex"))
+        lines.push(`Codex:        ${chalk.cyan("codex")}   ${chalk.dim(`(codex < 0.162 or headless: oab codex start${idFlag})`)}`);
       if (clients.includes("opencode")) lines.push(`OpenCode:     ${chalk.dim("plugin installed — restart OpenCode")}`);
       if (clients.includes("antigravity")) lines.push(`Antigravity:  ${chalk.dim("MCP + hooks installed — restart agy")}`);
       lines.push(`Status:       ${chalk.cyan("oab status")}`);

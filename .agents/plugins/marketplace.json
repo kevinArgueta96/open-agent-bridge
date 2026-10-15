@@ -1,0 +1,19 @@
+{
+  "name": "open-agent-bridge",
+  "interface": {
+    "displayName": "Open Agent Bridge"
+  },
+  "plugins": [
+    {
+      "name": "oab",
+      "source": {
+        "source": "local",
+        "path": "./plugins/open-agent-bridge"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

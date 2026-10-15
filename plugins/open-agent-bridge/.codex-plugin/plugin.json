@@ -1,0 +1,30 @@
+{
+  "name": "oab",
+  "version": "0.1.0",
+  "description": "Local agent communication hub — talk to your other Claude, Codex, OpenCode and Antigravity sessions from this one.",
+  "author": {
+    "name": "kargueta"
+  },
+  "homepage": "https://github.com/kevinArgueta96/open-agent-bridge",
+  "repository": "https://github.com/kevinArgueta96/open-agent-bridge",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "channel",
+    "a2a",
+    "multi-agent"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Open Agent Bridge",
+    "shortDescription": "Message your other local coding-agent sessions.",
+    "longDescription": "Registry + channel that lets Claude Code, Codex, OpenCode and Antigravity sessions running on this machine discover each other and exchange messages, with delivery acknowledgements.",
+    "developerName": "kargueta",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "List the other agent sessions running locally and tell me what they are working on"
+    ]
+  }
+}

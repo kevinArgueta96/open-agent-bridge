@@ -30,6 +30,12 @@ import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { BoundedIdSet } from "../client/bounded-id-set.js";
+import { buildInjectionPrompt } from "../client/injection-prompt.js";
+import {
+  claudeInboxSocketAvailable,
+  deliverViaClaudeInboxSocket,
+} from "../client/claude-inbox-socket.js";
+import { codexDaemonSocketPath, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
 import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
@@ -205,14 +211,14 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
       "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
       "",
-      "A Codex session can register two entries for the same project: an inner MCP client and a bridge daemon; routing auto-redirects inner clients to the bridge. OpenCode sessions auto-create channels with all visible peers on startup. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
+      "Claude Code (≥ 2.1.224) and Codex (≥ 0.162) receive messages as a new turn in the live session. A Codex session started with `oab codex start` also registers a bridge daemon; routing then auto-redirects its inner client to the bridge. OpenCode sessions auto-create channels with all visible peers on startup. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
     ].join("\n"),
     setup: [
       "# Setup",
       "",
       "Claude Code:",
-      "- Configure `.mcp.json` with `open-agent-bridge mcp config --write`.",
-      "- Start Claude Code with the open-agent-bridge development channel enabled.",
+      "- Run `open-agent-bridge init` once (writes `.mcp.json`), or install the `oab` plugin.",
+      "- Start `claude` normally: Claude Code ≥ 2.1.224 gets messages as a new turn through its inbox socket. Older releases: `open-agent-bridge claude --legacy-channels`.",
       "",
       "OpenCode:",
       "- Configure `.opencode/opencode.json` or `~/.config/opencode/opencode.json` with the open-agent-bridge MCP server entry.",
@@ -221,9 +227,9 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- Without the plugin, messages still arrive as MCP log entries but the LLM does not see them in real time.",
       "",
       "Codex:",
-      "- Preferred: `open-agent-bridge codex start --project <path>`.",
-      "- Manual: run `open-agent-bridge codex app-bridge --project <path>`, then attach the TUI with `codex --remote ws://127.0.0.1:4500`.",
-      "- A plain `codex` session is isolated; the bridge cannot inject automatic turns into it.",
+      "- Run `open-agent-bridge init --client codex` once (registers the MCP server in ~/.codex/config.toml), or install the `oab` plugin.",
+      "- Start `codex` normally: codex ≥ 0.162 gets messages as a new turn in the live TUI through its app-server daemon.",
+      "- Headless or codex < 0.162: `open-agent-bridge codex start --project <path>` runs a bridge that owns its own Codex thread.",
       "",
       "Antigravity (`agy`):",
       "- Run `open-agent-bridge antigravity install-plugin --project <path>` to write the MCP config + Stop/SessionStart hooks, then (re)start `agy` in that workspace.",
@@ -267,14 +273,14 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- `answered`: recipient replied to the original message.",
       "- `failed`: permanent delivery failure.",
       "",
-      "`delivered_to_bridge` does not mean the peer LLM read the message. For Codex, wait for `displayed_to_client` or `answered`; if Codex has no remote TUI attached, the bridge eventually marks the message failed with an actionable detail.",
+      "`delivered_to_bridge` does not mean the peer LLM read the message. Wait for `displayed_to_client` (handed to the live session) or `answered`. A Codex turn that cannot run (unsupported model, quota…) is marked `failed` with the reason.",
     ].join("\n"),
     troubleshooting: [
       "# Troubleshooting",
       "",
       "- No peers in `list_agents`: start registry/clients and pass `includeClients=true`.",
-      "- Message to Codex does not appear in TUI: use `open-agent-bridge codex start` or attach with `codex --remote ws://127.0.0.1:<port>`; plain `codex` is isolated.",
-      "- Stuck at `delivered_to_bridge`: bridge received the message but did not submit it to the runtime. Check Codex remote TUI, bridge logs, or long-running turns.",
+      "- Message to Codex does not appear in the TUI: run `open-agent-bridge doctor` — it needs codex ≥ 0.162 and the MCP server registered with Codex. With two Codex TUIs in the same project, the newest one receives it. Older Codex: `open-agent-bridge codex start`.",
+      "- Stuck at `delivered_to_bridge`: the adapter received the message but could not hand it to the session. A busy session receives it when its current turn ends (up to 5 minutes); otherwise check `open-agent-bridge doctor`.",
       "- `channel_inbox(pendingOnly=true)` is empty: message was fire-and-forget, already answered, expired/failed, or not addressed to this session.",
       "- Agent answers when it should not: pass `expectsResponse=false` explicitly and phrase the message as FYI/no-response.",
     ].join("\n"),
@@ -359,6 +365,8 @@ export class McpAgentBridge {
   private clientCapabilities: ClientCapabilitiesSnapshot = {};
   private embeddedRegistry: RegistryServer | null = null;
   private surfacedInboxMessageIds = new BoundedIdSet(5_000);
+  /** Tail of the Codex daemon deliveries, which run one at a time (never rejects). */
+  private codexDeliveries: Promise<boolean> = Promise.resolve(true);
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
   /** AgentIds of bridge daemons (`client-codex-bridge-*`) that share
@@ -549,6 +557,10 @@ export class McpAgentBridge {
   }
 
   private deliverChannelMessage(channelMessage: ChannelMessage): void {
+    // The live WS handler and the registry sync both land here; without this a
+    // reconnect replay during an in-flight delivery surfaces the message twice.
+    if (this.surfacedInboxMessageIds.has(channelMessage.messageId)) return;
+
     const isPassiveInnerClientMirror =
       (this.clientProfile.id === "codex" || this.clientProfile.id === "antigravity") &&
       typeof channelMessage.toAgentId === "string" &&
@@ -574,11 +586,79 @@ export class McpAgentBridge {
     // request — agy surfaces it as a live interaction even when idle, and its
     // answer is relayed straight back to the channel. Falls back to the
     // notification path if the elicit is declined / times out / unsupported.
+    // Claude Code native push: sessions with cross-session messaging (CC ≥
+    // 2.1.224) export their inbox socket to child processes, and the adapter
+    // is one. Injecting the message as a `user` frame starts a real turn even
+    // when the session is idle — strictly more reliable than the
+    // notifications/claude/channel path, which Claude only reads when it
+    // happens to look. Falls back to the notification path on any failure.
+    // Both async branches claim the id up front (released on failure): each
+    // duplicate here is a whole extra turn, not just a repeated notification.
+    // Not `mcp__open-agent-bridge__reply`: a plugin install prefixes it as `mcp__plugin_…`.
+    const injectTurn = (
+      deliver: (prompt: string) => Promise<boolean>,
+      detail: string,
+      { notifyOnFailure = true }: { notifyOnFailure?: boolean } = {},
+    ) => {
+      this.surfacedInboxMessageIds.add(channelMessage.messageId);
+      const prompt = buildInjectionPrompt(channelMessage, { replyTool: "reply (open-agent-bridge MCP tool)" });
+      void deliver(prompt).then((delivered) => {
+        if (!delivered) {
+          this.surfacedInboxMessageIds.delete(channelMessage.messageId);
+          if (notifyOnFailure) this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
+        } else if (!isPassiveInnerClientMirror) {
+          void this.postChannelAck({
+            conversationId: channelMessage.conversationId,
+            messageId: channelMessage.messageId,
+            state: "displayed_to_client",
+            actorId: this.clientAgentId ?? "mcp-adapter",
+            actorType: "bridge",
+            detail,
+          });
+        }
+      });
+    };
+
+    if (this.clientProfile.id === "claude" && claudeInboxSocketAvailable()) {
+      // "Written", not "accepted": Claude Code sends nothing back on that socket,
+      // so a stale token or a refused peer message cannot be told apart from success.
+      injectTurn((prompt) => deliverViaClaudeInboxSocket(prompt), "Message written to the Claude Code inbox socket");
+      return;
+    }
+
+    // Codex native push (codex-cli ≥ 0.162): the TUI runs on a shared app-server
+    // daemon and this adapter is one of its MCP servers, so starting a turn on
+    // the daemon's thread for this project lands in the user's live TUI. A
+    // sibling bridge (`oab codex start`) already owns its messages and any
+    // broadcast, so a passive mirror stays passive.
+    const ownedBySiblingBridge =
+      isPassiveInnerClientMirror || (!channelMessage.toAgentId && this.siblingBridgeAgentIds.size > 0);
+    if (this.clientProfile.id === "codex" && !ownedBySiblingBridge && codexDaemonSocketPath()) {
+      injectTurn(
+        (prompt) => {
+          // One at a time: two messages waiting on the same busy thread would
+          // both see it go idle and race for the same turn.
+          const delivery = this.codexDeliveries.then(() =>
+            deliverViaCodexDaemon(prompt, { cwd: this.resolvedProjectPath }),
+          );
+          this.codexDeliveries = delivery;
+          return delivery;
+        },
+        "Message injected into the live Codex session via the app-server daemon",
+        // Codex ignores MCP notifications: a fallback push would only ack a message
+        // nobody saw and stop the registry sync from retrying it. Leaving it
+        // pending also covers the adapter of a closed TUI, which defers to the
+        // live session's adapter.
+        { notifyOnFailure: false },
+      );
+      return;
+    }
+
     if (this.clientProfile.id === "antigravity" && this.clientCapabilities.elicitation) {
+      this.surfacedInboxMessageIds.add(channelMessage.messageId);
       void this.tryElicitPush(channelMessage).then((delivered) => {
-        if (delivered) {
-          this.surfacedInboxMessageIds.add(channelMessage.messageId);
-        } else {
+        if (!delivered) {
+          this.surfacedInboxMessageIds.delete(channelMessage.messageId);
           this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
         }
       });
@@ -609,7 +689,10 @@ export class McpAgentBridge {
             state: "displayed_to_client",
             actorId: this.clientAgentId ?? "mcp-adapter",
             actorType: "bridge",
-            detail: "Message forwarded to client channel",
+            detail:
+              this.clientProfile.id === "claude"
+                ? "Pushed via notifications/claude/channel (shown only with the legacy channels flag)"
+                : "Message forwarded to client channel",
           });
         }
       }
@@ -902,6 +985,12 @@ export class McpAgentBridge {
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
+        if (this.clientProfile.id === "claude" && !claudeInboxSocketAvailable()) {
+          console.error(
+            "[MCP] No Claude Code inbox socket (CC < 2.1.224 or cross-session messaging off): " +
+              "live push needs `oab claude --legacy-channels`; otherwise messages wait in channel_inbox.",
+          );
+        }
 
         // ── Capability probe ──────────────────────────────────────────────
         // Server→client push for non-Claude clients depends on which MCP
@@ -1413,16 +1502,16 @@ export class McpAgentBridge {
           "(a) conversationId participant lookup, (b) project name/path match; " +
           "when a project has multiple sessions, claude-code > antigravity > codex (override with clientType). " +
           "\n\nDELIVERY SEMANTICS by target type:" +
-          "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
+          "\n  • Claude Code  → message is injected as a new turn via Claude Code's inbox socket (fallback: <channel> push event)." +
           "\n  • OpenCode     → message arrives as a push notification via notifications/opencode/channel." +
-          "\n  • Codex        → message is injected as a new turn prompt by the bridge daemon." +
+          "\n  • Codex        → message is injected as a new turn into the live Codex session (app-server daemon, codex ≥ 0.162), or by the `oab codex start` bridge into its own thread." +
           "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +
           "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
           "If omitted, the adapter infers it from the message text." +
           "\n\nROUTING (you do NOT need to know which agentId is the bridge): if you pass an inner " +
           "Codex MCP-client agentId (e.g. client-codex-mcp-client-*), " +
           "the adapter auto-redirects the message to the bridge for the same project. So you can copy " +
-          "the `from_agent` of an inbound <channel> event or `replyWith.agentId` from channel_inbox " +
+          "the `agentId` from an injected message's reply template or `replyWith.agentId` from channel_inbox " +
           "directly — routing is fixed transparently. This avoids the failure mode where a message " +
           "gets stuck at `delivered_to_bridge` because it was sent to a passive inner client.",
         inputSchema: {
@@ -1456,7 +1545,7 @@ export class McpAgentBridge {
           "stamps as `fromAgentId` of their replies), the adapter auto-redirects to the project's bridge " +
           "daemon so the agent receives your reply as a turn prompt. You should always copy " +
           "`replyWith.agentId` verbatim — do NOT try to substitute a bridge agentId yourself. " +
-          "OpenCode and Claude Code targets receive the reply directly as a push notification.",
+          "Claude Code, Codex (≥ 0.162) and OpenCode targets receive the reply as a new turn in their live session.",
         inputSchema: {
           agentId: z.string().describe("The agentId of the sender you are replying to — MUST be replyWith.agentId from channel_inbox"),
           message: z.string().describe("Your reply text"),
@@ -1780,12 +1869,17 @@ export class McpAgentBridge {
 
       // Delivery wait strategy is client-specific:
       //
-      // • Claude Code / OpenCode → push delivery works reliably via notifications.
-      //   Return fast (≤3s) so the client is not blocked when the reply notification arrives.
-      // • Codex/Antigravity → `notifications/message` is only a log line; the AI agent does
-      //   NOT react to it once the tool call has returned. The only way to surface the reply
-      //   is in-band while the tool is still running. So we keep waiting for "answered".
-      const isPushClient = this.clientProfile.id === "claude" || this.clientProfile.id === "opencode";
+      // • Claude Code / OpenCode, and Codex on the app-server daemon → the reply is
+      //   delivered into the session as a new turn. Return fast (≤3s) so the sender
+      //   is not blocked, and does not see the reply twice (inline + new turn).
+      // • Older Codex / Antigravity → `notifications/message` is only a log line; the
+      //   agent does NOT react to it once the tool call has returned. The only way to
+      //   surface the reply is in-band while the tool is still running, so we keep
+      //   waiting for "answered".
+      const isPushClient =
+        this.clientProfile.id === "claude" ||
+        this.clientProfile.id === "opencode" ||
+        (this.clientProfile.id === "codex" && codexDaemonSocketPath() !== null);
 
       // Phase 1 – always wait briefly for any delivery confirmation
       const deliveryAck = await this.conversationService.waitForAcknowledgement(
@@ -1830,7 +1924,7 @@ export class McpAgentBridge {
           : deliveryState === "failed"
             ? "\n  Note: Delivery failed — the target bridge rejected the message."
             : isPushClient && deliveryState
-              ? `\n  Note: Message delivered. The reply will arrive as a push notification.\n  To check now: call channel_inbox(pendingOnly=true)`
+              ? `\n  Note: Message delivered. The reply will arrive in this session as a new message.\n  To check now: call channel_inbox(pendingOnly=true)`
               : deliveryState
                 ? `\n  Note: Message delivered but no reply within timeout.\n  Call channel_inbox(pendingOnly=true) to check for the reply.`
                 : `\n  Note: No delivery confirmation yet. The target bridge may be offline.\n  To check: call channel_inbox(pendingOnly=true)`;

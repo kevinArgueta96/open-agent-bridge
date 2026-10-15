@@ -1,12 +1,25 @@
 // `oab doctor` — diagnose the open-agent-bridge environment without aborting on
 // the first failure. Reports node version, PATH wiring, registry reachability,
-// .mcp.json status, and which client CLIs are available.
+// .mcp.json status, which client CLIs are available and whether their version
+// gets native delivery into the live session, and Codex's MCP registration.
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { isRegistryUp, whichBinary, DEFAULT_REGISTRY_URL } from "../lib/runtime.js";
 import { MCP_SERVER_NAME } from "../lib/mcp-config.js";
+import { claudeSupportsInboxSocket } from "../../client/claude-inbox-socket.js";
+import { codexSupportsDaemon } from "../../client/codex-daemon-socket.js";
+
+function versionOf(bin: string): string | null {
+  try {
+    return execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 5_000 }).trim();
+  } catch {
+    return null;
+  }
+}
 
 interface Check {
   name: string;
@@ -67,10 +80,46 @@ export function registerDoctorCommand(program: Command): void {
       }
       checks.push({ name: ".mcp.json configured", ok: mcpOk, detail: mcpDetail });
 
-      // Client CLIs (optional)
+      // Client CLIs (optional). Claude Code and Codex also report whether their
+      // version gets messages as a new turn in the live session.
       for (const bin of ["claude", "codex", "opencode", "agy"]) {
         const path = whichBinary(bin);
-        checks.push({ name: `client: ${bin}`, ok: path !== null, detail: path ?? "not in PATH (optional)", optional: true });
+        if (!path || (bin !== "claude" && bin !== "codex")) {
+          checks.push({ name: `client: ${bin}`, ok: path !== null, detail: path ?? "not in PATH (optional)", optional: true });
+          continue;
+        }
+        const version = versionOf(bin);
+        const native = bin === "claude" ? claudeSupportsInboxSocket(version) : codexSupportsDaemon(version);
+        const fallback =
+          bin === "claude" ? "needs Claude Code ≥ 2.1.224 — use: oab claude --legacy-channels" : "needs codex ≥ 0.162 — use: oab codex start";
+        checks.push({
+          name: `client: ${bin} (native push)`,
+          ok: native,
+          detail: native ? `${version ?? path} — messages arrive as a new turn in the live session` : `${version} — ${fallback}`,
+          optional: true,
+        });
+      }
+
+      // Codex reads MCP servers from its own config, not .mcp.json.
+      if (whichBinary("codex")) {
+        const codexConfig = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
+        const toml = existsSync(codexConfig) ? readFileSync(codexConfig, "utf-8") : "";
+        const registered = toml.includes(`[mcp_servers.${MCP_SERVER_NAME}]`) || toml.includes('"oab@open-agent-bridge"');
+        checks.push({
+          name: "Codex MCP registered",
+          ok: registered,
+          detail: registered ? codexConfig : "missing — run: oab init --client codex (or install the oab plugin)",
+          optional: true,
+        });
+        // Older `oab init` pinned the project in the GLOBAL config: every Codex
+        // session then registered as that one project, wherever it ran.
+        if (/AGENT_BRIDGE_PROJECT\s*=/.test(toml)) {
+          checks.push({
+            name: "Codex config not pinned to one project",
+            ok: false,
+            detail: `${codexConfig} sets AGENT_BRIDGE_PROJECT for every Codex session — run: oab init --client codex`,
+          });
+        }
       }
 
       if (options.json) {
