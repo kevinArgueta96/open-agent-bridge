@@ -160,4 +160,60 @@ describe("CodexAppServerClient — turn/start effort and rejection", () => {
     expect(rejected).toEqual([[ctx, "unsupported effort"]]);
     expect(client.turnInProgress).toBe(false);
   });
+
+  it("emits injectionRejected when an accepted turn fails upstream", () => {
+    const { client, raw } = readyClient(null);
+    const rejected: unknown[] = [];
+    client.on("injectionRejected", (c, reason) => rejected.push([c, reason]));
+    client.injectMessage("hi", ctx);
+
+    // Shape captured from codex-cli 0.146 when the configured model is unavailable.
+    const upstream = JSON.stringify({
+      type: "error",
+      status: 400,
+      error: { type: "invalid_request_error", message: "The 'x' model is not supported." },
+    });
+    (raw.handleNotification as (m: unknown) => void).call(client, {
+      method: "turn/completed",
+      params: { threadId: "own-1", turn: { id: "t-1", status: "failed", error: { message: upstream } } },
+    });
+
+    expect(rejected).toEqual([[ctx, "The 'x' model is not supported."]]);
+  });
+});
+
+describe("CodexAppServerClient — which agentMessage is the answer", () => {
+  const ctx = { conversationId: "c-1", messageId: "m-1", fromAgentId: "a-1", expectsResponse: true };
+
+  function injected() {
+    const client = new CodexAppServerClient();
+    const raw = client as unknown as Record<string, unknown>;
+    Object.assign(raw, { ws: { readyState: 1 }, _initialized: true, _currentThreadId: "own-1", send: () => {} });
+    const answers: string[] = [];
+    client.on("agentMessage", (text) => answers.push(text));
+    client.injectMessage("hi", ctx);
+    const complete = (item: Record<string, unknown>) =>
+      (raw.handleNotification as (m: unknown) => void).call(client, { method: "item/completed", params: { item } });
+    return { client, answers, complete };
+  }
+
+  it("skips commentary preambles and relays the final answer", () => {
+    const { client, answers, complete } = injected();
+
+    complete({ type: "agentMessage", id: "a", phase: "commentary", text: "I'll run git…" });
+    expect(answers).toEqual([]);
+    expect(client.turnInProgress).toBe(true);
+
+    complete({ type: "agentMessage", id: "b", phase: "final_answer", text: "branch: main" });
+    expect(answers).toEqual(["branch: main"]);
+  });
+
+  it("does not relay the final message when the model already answered via reply", () => {
+    const { answers, complete } = injected();
+
+    complete({ type: "mcpToolCall", id: "t", server: "open-agent-bridge", tool: "reply", status: "completed" });
+    complete({ type: "agentMessage", id: "b", text: "Replied to the sender." });
+
+    expect(answers).toEqual([]);
+  });
 });

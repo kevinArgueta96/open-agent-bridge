@@ -24,7 +24,8 @@ export interface InjectionContext {
 
 export interface CodexAppServerClientEvents {
   agentMessage: [text: string, ctx: InjectionContext | null];
-  /** The app-server refused a turn/start we sent (bad params, thread gone…). */
+  /** A turn we injected will never answer: turn/start was refused (bad params,
+   *  thread gone…) or the turn it started failed upstream. */
   injectionRejected: [ctx: InjectionContext, reason: string];
   turnStarted: [turnId: string];
   turnCompleted: [turnId: string];
@@ -499,6 +500,13 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
 
       case "turn/completed": {
         const turnId = this.readTurnId(params);
+        // turn/start can be accepted and the turn still fail upstream (model
+        // not available, quota…). No agentMessage will ever come, so release
+        // the injection as rejected instead of leaving the sender waiting.
+        const turn = params?.turn as { status?: string; error?: { message?: string } } | undefined;
+        if (turn?.status === "failed" && params?.threadId === this._currentThreadId) {
+          this.failLastInjection(turn.error?.message ?? "turn failed");
+        }
         if (turnId) {
           this.activeTurnIds.delete(turnId);
           if (this._activeTurnId === turnId) this._activeTurnId = null;
@@ -542,6 +550,24 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
           const buffered = itemId ? this.itemContentBuffers.get(itemId) : undefined;
           if (itemId) this.itemContentBuffers.delete(itemId);
 
+          // Codex narrates before acting ("I'll run…") as agentMessage items with
+          // phase "commentary". Relaying one as the answer closed the injection
+          // and marked the turn done while the real work was still running.
+          if (item.type === "agentMessage" && item.phase === "commentary") break;
+
+          // The model answered through the bridge's own `reply` tool: the sender
+          // already has it, so the final agentMessage must not be relayed again.
+          if (
+            item.type === "mcpToolCall" &&
+            item.tool === "reply" &&
+            item.status === "completed" &&
+            this.lastInjectionRequestId !== null
+          ) {
+            this.injectionContexts.delete(this.lastInjectionRequestId);
+            this.lastInjectionRequestId = null;
+            break;
+          }
+
           const text = buffered || this.extractAgentText(item);
           const ctx =
             text && this.lastInjectionRequestId !== null
@@ -563,6 +589,20 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         break;
       }
     }
+  }
+
+  private failLastInjection(rawReason: string): void {
+    const id = this.lastInjectionRequestId;
+    const ctx = id === null ? undefined : this.injectionContexts.get(id);
+    if (id === null || !ctx) return;
+    this.injectionContexts.delete(id);
+    this.lastInjectionRequestId = null;
+    // Codex forwards upstream API errors as a JSON string; surface the human message.
+    let reason = rawReason;
+    try {
+      reason = JSON.parse(rawReason)?.error?.message ?? rawReason;
+    } catch {}
+    this.emit("injectionRejected", ctx, reason);
   }
 
   /** Turn id lives at `params.turn.id`; older drafts used a flat `params.turnId`. */

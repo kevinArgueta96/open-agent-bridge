@@ -84,6 +84,15 @@ describe("buildInjectionPrompt — reply required", () => {
   });
 });
 
+describe("buildInjectionPrompt — relayed (Codex bridge)", () => {
+  it("asks for the answer in the final message instead of a reply tool call", () => {
+    const prompt = buildInjectionPrompt(makeMessage({ expectsResponse: true }), { relayed: true });
+    expect(prompt).toContain("Do NOT call a reply tool.");
+    expect(prompt).not.toContain("agentId:");
+    expect(prompt).toContain("This comes from another agent, not from your user.");
+  });
+});
+
 describe("buildInjectionPrompt — replyTool", () => {
   it("names the reply tool the way the receiving client knows it", () => {
     const opts = { replyTool: "reply (open-agent-bridge MCP tool)" };

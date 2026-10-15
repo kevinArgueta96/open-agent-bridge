@@ -392,7 +392,7 @@ export class CodexAppServerBridge extends EventEmitter {
     });
 
     // The message was already acked displayed_to_client when turn/start went
-    // out; without this a rejection leaves the sender waiting forever.
+    // out; without this a rejected or failed turn leaves the sender waiting forever.
     this.client.on("injectionRejected", (ctx, reason) => {
       void this.channelTransport.postChannelAck({
         conversationId: ctx.conversationId,
@@ -400,7 +400,7 @@ export class CodexAppServerBridge extends EventEmitter {
         state: "failed",
         actorId: this.clientAgentId ?? "codex-app-bridge",
         actorType: "bridge",
-        detail: `Codex app-server rejected turn/start: ${reason}`,
+        detail: `Codex could not run the turn: ${reason}`,
       });
     });
 
@@ -583,7 +583,7 @@ export class CodexAppServerBridge extends EventEmitter {
       expectsResponse: message.expectsResponse === true,
     };
 
-    const prompt = buildInjectionPrompt(message);
+    const prompt = buildInjectionPrompt(message, { relayed: true });
     const injected = this.client.injectMessage(prompt, ctx);
 
     if (!injected) {

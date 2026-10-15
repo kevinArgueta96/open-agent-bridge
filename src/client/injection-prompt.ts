@@ -42,11 +42,14 @@ import type { ChannelMessage } from "../types/messages.js";
  * trivially unit-testable. The Codex bridge daemon (`codex-app-server-bridge.ts`)
  * and the Claude Code inbox-socket path (`mcp/adapter.ts`) import this single
  * implementation; `replyTool` names the reply tool the way the receiving
- * client knows it.
+ * client knows it. `relayed` is for the Codex bridge, which owns the turn and
+ * relays its final message itself: asking the model to also call `reply`
+ * produced duplicate answers, and the tool call can be refused outright when
+ * the thread runs with `approvalPolicy: never`.
  */
 export function buildInjectionPrompt(
   message: ChannelMessage,
-  { replyTool = "agent-bridge.reply" }: { replyTool?: string } = {},
+  { replyTool = "agent-bridge.reply", relayed = false }: { replyTool?: string; relayed?: boolean } = {},
 ): string {
   const sender = message.fromAgentName ?? message.fromAgentId;
   const senderShort = message.fromAgentId.slice(-8);
@@ -80,7 +83,20 @@ export function buildInjectionPrompt(
     "",
   );
 
-  if (expectsReply) {
+  if (expectsReply && relayed) {
+    lines.push(
+      "▶ Answer the sender NOW in your final message for this turn — the",
+      "  bridge relays it to them automatically. Do NOT call a reply tool.",
+      "",
+      "How to compose the answer:",
+      "  1. Do any local work the sender's message implies (read files,",
+      "     run shell, search the web, inspect logs).",
+      "  2. End the turn with the answer itself, not a plan or a preamble.",
+      "  3. If you cannot help, say so briefly — a",
+      '     "can\'t help here, X is out of scope" is far better than',
+      "     silence.",
+    );
+  } else if (expectsReply) {
     lines.push(
       "▶ Respond to the sender NOW with the agent-bridge MCP. The sender is",
       "  waiting on this turn — silence will block them.",
