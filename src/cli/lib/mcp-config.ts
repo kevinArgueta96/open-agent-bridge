@@ -62,13 +62,19 @@ export function buildMcpConfig(opts: BuildMcpConfigOptions = {}): {
 
 /** Codex ignores .mcp.json — it only loads MCP servers from ~/.codex/config.toml.
  *  Rather than writing TOML ourselves, build the argv for the official
- *  `codex mcp add` CLI so Codex owns its own config format. */
+ *  `codex mcp add` CLI so Codex owns its own config format.
+ *
+ *  That file is GLOBAL, so AGENT_BRIDGE_PROJECT is left out: pinned there, every
+ *  Codex session in any directory registered as the project `oab init` ran in.
+ *  Codex starts the adapter in the session's cwd, which is the right project. */
 export function buildCodexMcpAddArgs(entry: McpServerEntry): string[] {
   return [
     "mcp",
     "add",
     MCP_SERVER_NAME,
-    ...Object.entries(entry.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+    ...Object.entries(entry.env)
+      .filter(([k]) => k !== "AGENT_BRIDGE_PROJECT")
+      .flatMap(([k, v]) => ["--env", `${k}=${v}`]),
     "--",
     entry.command,
     ...entry.args,

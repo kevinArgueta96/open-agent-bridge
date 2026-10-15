@@ -97,7 +97,8 @@ describe("writeCodexProjectConfig", () => {
 });
 
 describe("buildCodexMcpAddArgs", () => {
-  it("builds a codex mcp add argv with env flags before the -- separator", () => {
+  it("builds a codex mcp add argv with env flags before the -- separator, never pinning the project", () => {
+    // ~/.codex/config.toml is global: a pinned project would apply to every Codex session.
     const args = buildCodexMcpAddArgs({
       command: "open-agent-bridge",
       args: ["mcp", "start"],
@@ -107,8 +108,6 @@ describe("buildCodexMcpAddArgs", () => {
       "mcp",
       "add",
       MCP_SERVER_NAME,
-      "--env",
-      "AGENT_BRIDGE_PROJECT=/my proj",
       "--env",
       "AGENT_BRIDGE_IDENTITY=ril",
       "--",
