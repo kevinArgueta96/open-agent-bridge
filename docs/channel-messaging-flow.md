@@ -174,7 +174,7 @@ Dedup uses an in-memory `Set` with a TTL; the `ConversationSessionStore` tracks 
 3. **`deliverChannelMessage(message)`**:
    - Posts ack `delivered_to_bridge` (HTTP POST `/channel/acks`).
    - **Native delivery first** (claims the messageId before the async write, releases it on failure):
-     - **Claude profile** with `$CLAUDE_CODE_MESSAGING_SOCKET` → `buildInjectionPrompt()` written to Claude Code's inbox socket; runs as the next turn. Ack `displayed_to_client` ("injected via Claude Code inbox socket").
+     - **Claude profile** with `$CLAUDE_CODE_MESSAGING_SOCKET` → `buildInjectionPrompt()` written to Claude Code's inbox socket; runs as the next turn. Ack `displayed_to_client` ("written to the Claude Code inbox socket" — Claude Code sends no confirmation back, so this is best effort).
      - **Codex profile** with the app-server daemon socket → `turn/start` on the session's own thread (waits for idle); ack "injected into the live Codex session". On failure the message stays pending for the next sync — no notification fallback, Codex ignores them.
    - Otherwise maps the channel message to a JSON-RPC notification via `clientProfile.mapChannelMessage()`:
      - **Claude profile** → `notifications/claude/channel` (experimental capability `claude/channel`) — legacy fallback, only rendered when Claude Code runs with `--dangerously-load-development-channels`.

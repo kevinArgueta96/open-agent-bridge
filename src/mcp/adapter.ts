@@ -620,7 +620,9 @@ export class McpAgentBridge {
     };
 
     if (this.clientProfile.id === "claude" && claudeInboxSocketAvailable()) {
-      injectTurn((prompt) => deliverViaClaudeInboxSocket(prompt), "Message injected via Claude Code inbox socket");
+      // "Written", not "accepted": Claude Code sends nothing back on that socket,
+      // so a stale token or a refused peer message cannot be told apart from success.
+      injectTurn((prompt) => deliverViaClaudeInboxSocket(prompt), "Message written to the Claude Code inbox socket");
       return;
     }
 
