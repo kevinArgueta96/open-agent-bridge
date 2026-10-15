@@ -82,7 +82,7 @@ export function registerDoctorCommand(program: Command): void {
 
       // Client CLIs (optional). Claude Code and Codex also report whether their
       // version gets messages as a new turn in the live session.
-      for (const bin of ["claude", "codex", "opencode", "agy"]) {
+      for (const bin of ["claude", "codex", "opencode", "agy", "pi"]) {
         const path = whichBinary(bin);
         if (!path || (bin !== "claude" && bin !== "codex")) {
           checks.push({ name: `client: ${bin}`, ok: path !== null, detail: path ?? "not in PATH (optional)", optional: true });
@@ -96,6 +96,41 @@ export function registerDoctorCommand(program: Command): void {
           name: `client: ${bin} (native push)`,
           ok: native,
           detail: native ? `${version ?? path} — messages arrive as a new turn in the live session` : `${version} — ${fallback}`,
+          optional: true,
+        });
+      }
+
+      // OpenCode, pi and agy start turns only from inside their own process, so
+      // native delivery needs their in-process half installed.
+      const inHost = [
+        {
+          bin: "opencode",
+          name: "OpenCode plugin",
+          files: [resolve(".opencode/plugins/agent-bridge.ts"), join(homedir(), ".config/opencode/plugins/agent-bridge.ts")],
+          fix: "oab opencode install-plugin",
+        },
+        {
+          bin: "pi",
+          name: "pi extension",
+          files: [resolve(".pi/extensions/open-agent-bridge.ts"), join(homedir(), ".pi/agent/extensions/open-agent-bridge.ts")],
+          fix: "oab pi install-extension",
+        },
+        {
+          bin: "agy",
+          name: "agy sidecar",
+          files: [join(homedir(), ".gemini/config/sidecars/open-agent-bridge/sidecar.json")],
+          fix: "oab antigravity install-sidecar",
+        },
+      ];
+      for (const c of inHost) {
+        if (!whichBinary(c.bin)) continue;
+        const found = c.files.find((f) => existsSync(f));
+        // The pre-2026-10 OpenCode plugin (no default export) fails to load on OpenCode 2.
+        const outdated = c.bin === "opencode" && found && !readFileSync(found, "utf-8").includes('id: "open-agent-bridge"');
+        checks.push({
+          name: `${c.name} (native push)`,
+          ok: Boolean(found) && !outdated,
+          detail: !found ? `missing — run: ${c.fix}` : outdated ? `outdated — run: ${c.fix}` : found,
           optional: true,
         });
       }

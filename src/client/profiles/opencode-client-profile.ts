@@ -23,7 +23,7 @@ function buildNotificationPayload(content: string, meta: Record<string, unknown>
 }
 
 export class OpenCodeClientProfile implements ClientBehaviorProfile {
-  readonly id = "opencode";
+  readonly id: string = "opencode";
   readonly deliveryMode = "push" as const;
 
   acceptsChannelMessage(
@@ -77,4 +77,10 @@ export class OpenCodeClientProfile implements ClientBehaviorProfile {
       ...(payload?.skillId ? { skill_id: payload.skillId } : {}),
     });
   }
+}
+
+/** pi talks to the bridge exactly like OpenCode: MCP tools from the adapter,
+ *  turns from an in-process component (here a pi extension). */
+export class PiClientProfile extends OpenCodeClientProfile {
+  readonly id: string = "pi";
 }

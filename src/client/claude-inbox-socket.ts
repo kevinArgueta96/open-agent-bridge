@@ -52,13 +52,18 @@ export function claudeInboxSocketAvailable(env: NodeJS.ProcessEnv = process.env)
  * Resolves `true` when both frames were written and the connection closed
  * cleanly; `false` on any failure (missing socket, connect error, timeout) so
  * the caller can fall back to MCP-notification delivery. Never throws.
+ *
+ * The same NDJSON frames feed the host inbox sockets of OpenCode, pi and
+ * Antigravity (host-inbox-socket.ts). With an explicit `socketPath` the token
+ * comes only from `options`: an inherited Claude Code token must never be
+ * written to another agent's socket.
  */
 export function deliverViaClaudeInboxSocket(
   content: string,
   options: ClaudeInboxSocketOptions = {},
 ): Promise<boolean> {
   const socketPath = options.socketPath ?? process.env.CLAUDE_CODE_MESSAGING_SOCKET;
-  const token = options.token ?? process.env.CLAUDE_CODE_MESSAGING_TOKEN;
+  const token = options.socketPath ? options.token : (options.token ?? process.env.CLAUDE_CODE_MESSAGING_TOKEN);
   if (!socketPath) return Promise.resolve(false);
 
   return new Promise((resolve) => {

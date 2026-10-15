@@ -69,10 +69,25 @@ function decodeWorkspaceUri(uri?: string): string {
   }
 }
 
-async function rpc(port: number, method: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`http://127.0.0.1:${port}/${LS_SERVICE}/${method}`, {
+/** Where agy's language server listens. agy ≥ 1.3 rejects RPCs without the
+ *  CSRF token it hands to its sidecars (`x-codeium-csrf-token`). */
+export interface LsTarget {
+  url: string;
+  csrf?: string;
+}
+
+/** The language server of the agy process that started us as a sidecar. */
+export function lsTargetFromEnv(env: NodeJS.ProcessEnv = process.env): LsTarget | undefined {
+  const address = env.ANTIGRAVITY_LS_ADDRESS;
+  if (!address) return undefined;
+  return { url: address.startsWith("http") ? address : `http://${address}`, csrf: env.ANTIGRAVITY_CSRF_TOKEN };
+}
+
+async function rpc(target: number | LsTarget, method: string, body: unknown): Promise<unknown> {
+  const { url, csrf } = typeof target === "number" ? { url: `http://127.0.0.1:${target}`, csrf: undefined } : target;
+  const res = await fetch(`${url}/${LS_SERVICE}/${method}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(csrf ? { "x-codeium-csrf-token": csrf } : {}) },
     body: JSON.stringify(body ?? {}),
     signal: AbortSignal.timeout(10_000),
   });
@@ -131,10 +146,10 @@ export async function discoverLsHttpPort(): Promise<number | undefined> {
 
 /** Resolve the active cascadeId for a project workspace, or undefined. */
 export async function getActiveCascadeId(
-  port: number,
+  target: number | LsTarget,
   projectPath: string,
 ): Promise<string | undefined> {
-  const resp = (await rpc(port, "GetAllCascadeTrajectories", {})) as CascadeTrajectoriesResponse;
+  const resp = (await rpc(target, "GetAllCascadeTrajectories", {})) as CascadeTrajectoriesResponse;
   return pickActiveCascadeId(resp, projectPath);
 }
 
@@ -143,14 +158,17 @@ export async function getActiveCascadeId(
  *  (a known enum) so agy treats it as an external/SDK-driven message. Returns
  *  true on HTTP 200. */
 export async function sendUserCascadeMessage(
-  port: number,
+  target: number | LsTarget,
   cascadeId: string,
   text: string,
 ): Promise<boolean> {
-  await rpc(port, "SendUserCascadeMessage", {
+  await rpc(target, "SendUserCascadeMessage", {
     cascadeId,
     items: [{ text }],
-    messageOrigin: "MESSAGE_ORIGIN_SDK_EXECUTABLE",
+    // Enum names from agy 1.3.4 (`exa.cortex_pb`); the old MESSAGE_ORIGIN_* value does not exist.
+    messageOrigin: "AGENT_MESSAGE_ORIGIN_SDK_EXECUTABLE",
+    // Queue behind a running turn instead of being rejected or interrupting it.
+    deliveryStrategy: "MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE",
   });
   return true;
 }

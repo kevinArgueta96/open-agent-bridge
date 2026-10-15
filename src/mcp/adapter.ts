@@ -36,6 +36,10 @@ import {
   deliverViaClaudeInboxSocket,
 } from "../client/claude-inbox-socket.js";
 import { codexDaemonSocketPath, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
+import { parentHostInboxSocket } from "../client/host-inbox-socket.js";
+
+/** Clients whose in-process component (plugin / extension / sidecar) opens a host inbox socket. */
+const HOST_INBOX_CLIENTS = new Set(["opencode", "pi", "antigravity"]);
 import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
@@ -103,6 +107,7 @@ export type PeerType =
   | "antigravity-inner"
   | "opencode-code"
   | "opencode-bridge"
+  | "pi-code"
   | "dashboard-ui"
   | "unknown";
 
@@ -125,6 +130,7 @@ export function getPeerType(entry: RegistryEntry): PeerType {
   if (clientVersion === "app-server-bridge") return "codex-bridge";
   if (clientName.includes("codex")) return "codex-inner";
   if (clientName.includes("antigravity") || clientName === "agy") return "antigravity-inner";
+  if (clientName === "pi") return "pi-code";
   return "unknown";
 }
 
@@ -144,6 +150,8 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
       return "Codex inner";
     case "antigravity-inner":
       return "Antigravity inner";
+    case "pi-code":
+      return "pi";
     case "dashboard-ui":
       return "Dashboard UI";
     default:
@@ -649,6 +657,22 @@ export class McpAgentBridge {
         // nobody saw and stop the registry sync from retrying it. Leaving it
         // pending also covers the adapter of a closed TUI, which defers to the
         // live session's adapter.
+        { notifyOnFailure: false },
+      );
+      return;
+    }
+
+    // OpenCode, pi and Antigravity can only start a turn from inside their own
+    // process (plugin / extension / sidecar). That component listens on an
+    // inbox socket named after the agent's pid, and this adapter is the agent's
+    // child. Same frames as Claude Code; these agents ignore MCP notifications,
+    // so a miss stays pending for the next registry sync.
+    const hostInbox =
+      HOST_INBOX_CLIENTS.has(this.clientProfile.id) && !ownedBySiblingBridge ? parentHostInboxSocket(process.env, this.resolvedProjectPath) : null;
+    if (hostInbox) {
+      injectTurn(
+        (prompt) => deliverViaClaudeInboxSocket(prompt, { socketPath: hostInbox }),
+        `Message written to the ${this.clientProfile.id} session inbox socket`,
         { notifyOnFailure: false },
       );
       return;
@@ -1584,7 +1608,7 @@ export class McpAgentBridge {
             requiresAck: true,
             expectsResponse: false,
             acknowledgementState: "answered",
-            acknowledgementDetail: "Reply sent from Claude channel",
+            acknowledgementDetail: `Reply sent from ${this.clientProfile.id} session`,
           });
 
           const resolvedAgentId =
@@ -1879,7 +1903,8 @@ export class McpAgentBridge {
       const isPushClient =
         this.clientProfile.id === "claude" ||
         this.clientProfile.id === "opencode" ||
-        (this.clientProfile.id === "codex" && codexDaemonSocketPath() !== null);
+        (this.clientProfile.id === "codex" && codexDaemonSocketPath() !== null) ||
+        (HOST_INBOX_CLIENTS.has(this.clientProfile.id) && parentHostInboxSocket(process.env, this.resolvedProjectPath) !== null);
 
       // Phase 1 – always wait briefly for any delivery confirmation
       const deliveryAck = await this.conversationService.waitForAcknowledgement(
