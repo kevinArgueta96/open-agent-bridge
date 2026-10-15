@@ -35,6 +35,7 @@ import {
   claudeInboxSocketAvailable,
   deliverViaClaudeInboxSocket,
 } from "../client/claude-inbox-socket.js";
+import { codexDaemonSocketPath, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
 import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
@@ -591,27 +592,42 @@ export class McpAgentBridge {
     // happens to look. Falls back to the notification path on any failure.
     // Both async branches claim the id up front (released on failure): each
     // duplicate here is a whole extra turn, not just a repeated notification.
-    if (this.clientProfile.id === "claude" && claudeInboxSocketAvailable()) {
+    // Not `mcp__open-agent-bridge__reply`: a plugin install prefixes it as `mcp__plugin_…`.
+    const injectTurn = (deliver: (prompt: string) => Promise<boolean>, detail: string) => {
       this.surfacedInboxMessageIds.add(channelMessage.messageId);
-      // Not `mcp__open-agent-bridge__reply`: a plugin install prefixes it as `mcp__plugin_…`.
       const prompt = buildInjectionPrompt(channelMessage, { replyTool: "reply (open-agent-bridge MCP tool)" });
-      void deliverViaClaudeInboxSocket(prompt).then((delivered) => {
-        if (delivered) {
-          if (!isPassiveInnerClientMirror) {
-            void this.postChannelAck({
-              conversationId: channelMessage.conversationId,
-              messageId: channelMessage.messageId,
-              state: "displayed_to_client",
-              actorId: this.clientAgentId ?? "mcp-adapter",
-              actorType: "bridge",
-              detail: "Message injected via Claude Code inbox socket",
-            });
-          }
-        } else {
+      void deliver(prompt).then((delivered) => {
+        if (!delivered) {
           this.surfacedInboxMessageIds.delete(channelMessage.messageId);
           this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
+        } else if (!isPassiveInnerClientMirror) {
+          void this.postChannelAck({
+            conversationId: channelMessage.conversationId,
+            messageId: channelMessage.messageId,
+            state: "displayed_to_client",
+            actorId: this.clientAgentId ?? "mcp-adapter",
+            actorType: "bridge",
+            detail,
+          });
         }
       });
+    };
+
+    if (this.clientProfile.id === "claude" && claudeInboxSocketAvailable()) {
+      injectTurn((prompt) => deliverViaClaudeInboxSocket(prompt), "Message injected via Claude Code inbox socket");
+      return;
+    }
+
+    // Codex native push (codex-cli ≥ 0.162): the TUI runs on a shared app-server
+    // daemon and this adapter is one of its MCP servers, so starting a turn on
+    // the daemon's thread for this project lands in the user's live TUI. A
+    // passive mirror stays passive: its sibling bridge (`oab codex start`)
+    // already owns that message.
+    if (this.clientProfile.id === "codex" && !isPassiveInnerClientMirror && codexDaemonSocketPath()) {
+      injectTurn(
+        (prompt) => deliverViaCodexDaemon(prompt, { cwd: this.resolvedProjectPath }),
+        "Message injected into the live Codex session via the app-server daemon",
+      );
       return;
     }
 
@@ -1465,7 +1481,7 @@ export class McpAgentBridge {
           "\n\nDELIVERY SEMANTICS by target type:" +
           "\n  • Claude Code  → message is injected as a new turn via Claude Code's inbox socket (fallback: <channel> push event)." +
           "\n  • OpenCode     → message arrives as a push notification via notifications/opencode/channel." +
-          "\n  • Codex        → message is injected as a new turn prompt by the bridge daemon." +
+          "\n  • Codex        → message is injected as a new turn into the live Codex session (app-server daemon, codex ≥ 0.162), or by the `oab codex start` bridge into its own thread." +
           "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +
           "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
           "If omitted, the adapter infers it from the message text." +
