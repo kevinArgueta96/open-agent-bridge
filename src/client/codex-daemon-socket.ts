@@ -39,6 +39,8 @@ export interface CodexDaemonOptions {
   socketPath?: string | null;
   /** How long to wait for a busy thread to go idle before giving up. */
   idleWaitMs?: number;
+  /** How long connecting + finding the thread may take. Default 10 s. */
+  discoveryTimeoutMs?: number;
   /** When this adapter process started (ms epoch). Default: from process.uptime(). */
   startedAt?: number;
 }
@@ -70,8 +72,9 @@ export function codexDaemonSocketPath(env: NodeJS.ProcessEnv = process.env): str
 /**
  * Start a turn with `content` on the live Codex thread for `cwd`. Resolves
  * `true` once the daemon accepted the turn; `false` when there is no daemon,
- * no loaded thread for the project, the thread stayed busy past `idleWaitMs`,
- * or anything failed — so the caller can fall back. Never throws.
+ * no loaded thread for the project, a newer session owns the project, the
+ * thread stayed busy past `idleWaitMs`, or anything failed — so the caller can
+ * leave the message pending and retry later. Never throws.
  */
 export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptions): Promise<boolean> {
   const socketPath = options.socketPath === undefined ? codexDaemonSocketPath() : options.socketPath;
@@ -80,6 +83,8 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws+unix://${socketPath}:/`);
     const pending = new Map<number, (msg: RpcMessage) => void>();
+    /** Latest status per thread, including changes that land mid-discovery. */
+    const statusOf = new Map<string, string>();
     let nextId = 0;
     let threadId: string | null = null;
     let started = false;
@@ -89,12 +94,17 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(discoveryTimer);
       ws.close();
       resolve(ok);
     };
     // ponytail: one flat budget covers connect + waiting for idle; a thread busy
-    // longer than this falls back to the inbox instead of holding a socket open.
+    // longer than this stays pending for the next registry sync instead of
+    // holding a socket open.
     const timer = setTimeout(() => done(false), options.idleWaitMs ?? 5 * 60_000);
+    // A daemon that accepts the connection but never answers must not hold the
+    // message for the whole idle budget.
+    const discoveryTimer = setTimeout(() => threadId || done(false), options.discoveryTimeoutMs ?? 10_000);
 
     const call = (method: string, params: Record<string, unknown>) =>
       new Promise<RpcMessage>((res) => {
@@ -123,8 +133,10 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
         return;
       }
       const status = msg.params?.status as { type?: string } | undefined;
-      if (msg.method === "thread/status/changed" && msg.params?.threadId === threadId && status?.type === "idle") {
-        void startTurn();
+      const changed = msg.params?.threadId;
+      if (msg.method === "thread/status/changed" && typeof changed === "string" && status?.type) {
+        statusOf.set(changed, status.type);
+        if (changed === threadId && status.type === "idle") void startTurn();
       }
     });
     ws.on("error", () => done(false));
@@ -155,7 +167,7 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
         // answer from their dead thread. Only the newest session delivers.
         if (candidates.some((c) => uuidV7Time(c.id) > uuidV7Time(thread.id))) return done(false);
         threadId = thread.id;
-        if (thread.status?.type === "idle") await startTurn();
+        if ((statusOf.get(thread.id) ?? thread.status?.type) === "idle") await startTurn();
       } catch {
         done(false);
       }

@@ -19,7 +19,11 @@ interface FakeDaemon {
   close: () => Promise<void>;
 }
 
-function fakeDaemon(dir: string, threads: Array<{ id: string; cwd: string; status: string }>): Promise<FakeDaemon> {
+function fakeDaemon(
+  dir: string,
+  threads: Array<{ id: string; cwd: string; status: string }>,
+  { silent = false, idleDuringRead = false }: { silent?: boolean; idleDuringRead?: boolean } = {},
+): Promise<FakeDaemon> {
   const socketPath = join(dir, "d.sock");
   const http: Server = createServer();
   const wss = new WebSocketServer({ server: http });
@@ -29,12 +33,16 @@ function fakeDaemon(dir: string, threads: Array<{ id: string; cwd: string; statu
     peer = ws;
     ws.on("message", (raw) => {
       const msg = JSON.parse(String(raw)) as { id?: number; method: string; params: Record<string, unknown> };
-      if (msg.id === undefined) return;
+      if (msg.id === undefined || silent) return;
       const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
       if (msg.method === "initialize") reply({ userAgent: "fake" });
       if (msg.method === "thread/loaded/list") reply({ data: threads.map((t) => t.id) });
       if (msg.method === "thread/read") {
         const t = threads.find((x) => x.id === msg.params.threadId);
+        // The thread finishes its turn while the adapter is still discovering.
+        if (idleDuringRead && t) {
+          ws.send(JSON.stringify({ method: "thread/status/changed", params: { threadId: t.id, status: { type: "idle" } } }));
+        }
         reply({ thread: t && { ...t, status: { type: t.status } } });
       }
       if (msg.method === "turn/start") {
@@ -128,6 +136,21 @@ describe("deliverViaCodexDaemon", () => {
     const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath, idleWaitMs: 150 });
     expect(ok).toBe(false);
     expect(daemon.turnStarts).toHaveLength(0);
+  });
+
+  it("does not miss a thread that goes idle while it is still being discovered", async () => {
+    daemon = await fakeDaemon(dir, [{ id: MINE, cwd: "/proj", status: "active" }], { idleDuringRead: true });
+    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath, idleWaitMs: 2_000 });
+    expect(ok).toBe(true);
+    expect(daemon.turnStarts).toHaveLength(1);
+  });
+
+  it("gives up quickly on a daemon that accepts the connection but never answers", async () => {
+    daemon = await fakeDaemon(dir, [{ id: MINE, cwd: "/proj", status: "idle" }], { silent: true });
+    const started = Date.now();
+    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath, discoveryTimeoutMs: 150 });
+    expect(ok).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it("resolves false without a daemon socket", async () => {
