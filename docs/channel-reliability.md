@@ -1,5 +1,7 @@
 # Channel reliability — push notifications & inbox state
 
+> **Historical context.** This analysis covers the `notifications/claude/channel` push, which is now only the **legacy fallback** (Claude Code < 2.1.224 with `--dangerously-load-development-channels`). Claude Code ≥ 2.1.224 receives messages through its own inbox socket and Codex ≥ 0.162 through its app-server daemon — see the README's [Client bridges](../README.md#client-bridges). The inbox-state findings below still apply.
+
 This document analyses two bugs reported in the channel layer of `agent-bridge` and the fixes applied to address them. It also contrasts our implementation with the official Claude Code channels spec ([code.claude.com/docs/en/channels-reference](https://code.claude.com/docs/en/channels-reference)) and lists improvements still on the table.
 
 ## Symptoms

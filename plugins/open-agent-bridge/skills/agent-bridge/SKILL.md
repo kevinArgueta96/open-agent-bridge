@@ -53,20 +53,15 @@ Routing notes:
 
 ## Setting up Codex CLI with the bridge
 
-For messages to reach the Codex TUI automatically, the Codex TUI must be attached to the app-server started by the bridge. Use either:
+On codex-cli ≥ 0.162 nothing extra is needed: register the MCP server once (`open-agent-bridge init --client codex`, or the `oab` plugin) and run plain `codex`. Incoming messages start a new turn in the live TUI through Codex's app-server daemon, and Codex answers with `reply`. A busy session gets the message when its current turn ends.
+
+`open-agent-bridge doctor` confirms it (`client: codex (native push)`). For headless use or codex < 0.162, run a bridge that owns its own Codex thread:
 
 ```text
 open-agent-bridge codex start
 ```
 
-or start the bridge daemon and attach Codex manually:
-
-```text
-open-agent-bridge codex app-bridge
-codex --remote ws://127.0.0.1:4500
-```
-
-A plain `codex` invocation runs an isolated session. The bridge can still register, store messages, and let the inner MCP client show them in `channel_inbox`, but it cannot inject an automatic TUI turn into that isolated session. If delivery fails with detail `No Codex TUI attached to bridge app-server`, attach Codex with `codex --remote ws://127.0.0.1:<port>` or use `open-agent-bridge codex start`.
+On those older releases a plain `codex` invocation is isolated: the inner MCP client can still show messages in `channel_inbox`, but nothing injects a turn into it.
 
 ### Pattern B — reply to a pending message
 

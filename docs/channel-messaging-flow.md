@@ -140,9 +140,9 @@ The registry stores `agentWsMap[agentId] = ws`. Re-identification on the same so
 After posting, `handleMessageClientSession` waits on the **delivery state machine** via `ConversationService.waitForAcknowledgement(...)`:
 
 - **Phase 1** (≤ 3s, all clients): wait for any of `delivered_to_bridge | displayed_to_client | answered | failed`. This catches "the bridge got it".
-- **Phase 2** (only for non-Claude clients, when `expectsResponse=true`): wait up to `timeoutMs` (capped at 120s) for `answered | failed`.
+- **Phase 2** (only for clients without native delivery — older Codex, Antigravity — when `expectsResponse=true`): wait up to `timeoutMs` (capped at 120s) for `answered | failed`.
 
-Why the asymmetry: Claude Code receives messages as live push notifications (`notifications/claude/channel`) and processes them while idle. If we blocked the tool, the incoming reply notification couldn't be processed — so we return fast and let the inbox surface the reply asynchronously. Codex/Gemini cannot react to a `notifications/message` log line after a tool returns, so we must keep waiting and return the reply inline.
+Why the asymmetry: Claude Code (inbox socket), OpenCode (plugin) and Codex ≥ 0.162 (app-server daemon) receive messages as a new turn in the live session, even while idle. If we blocked the tool, the incoming reply notification couldn't be processed — so we return fast and let the inbox surface the reply asynchronously. Codex/Gemini cannot react to a `notifications/message` log line after a tool returns, so we must keep waiting and return the reply inline.
 
 ## Receive path (the other side)
 
@@ -173,8 +173,11 @@ Dedup uses an in-memory `Set` with a TTL; the `ConversationSessionStore` tracks 
 2. **Profile filter**: `clientProfile.acceptsChannelMessage(message, selfAgentId)` decides whether this client cares about the message (broadcast vs. targeted, etc.).
 3. **`deliverChannelMessage(message)`**:
    - Posts ack `delivered_to_bridge` (HTTP POST `/channel/acks`).
-   - Maps the channel message to a JSON-RPC notification via `clientProfile.mapChannelMessage()`:
-     - **Claude profile** → `notifications/claude/channel` (experimental capability `claude/channel`). Push delivery, processed live.
+   - **Native delivery first** (claims the messageId before the async write, releases it on failure):
+     - **Claude profile** with `$CLAUDE_CODE_MESSAGING_SOCKET` → `buildInjectionPrompt()` written to Claude Code's inbox socket; runs as the next turn. Ack `displayed_to_client` ("injected via Claude Code inbox socket").
+     - **Codex profile** with the app-server daemon socket → `turn/start` on the session's own thread (waits for idle); ack "injected into the live Codex session". On failure the message stays pending for the next sync — no notification fallback, Codex ignores them.
+   - Otherwise maps the channel message to a JSON-RPC notification via `clientProfile.mapChannelMessage()`:
+     - **Claude profile** → `notifications/claude/channel` (experimental capability `claude/channel`) — legacy fallback, only rendered when Claude Code runs with `--dangerously-load-development-channels`.
      - **Codex / Gemini profiles** → `notifications/message` (standard MCP log line; not reactive — these clients see replies in the tool result instead).
    - Calls `server.server.notification(notification)` with 2 retries, 500ms × attempt backoff.
    - Posts ack `displayed_to_client`.
@@ -286,9 +289,10 @@ McpAgentBridge.handleMessageClientSession                       (src/mcp/adapter
                                                                        ▼
                                                           McpAgentBridge.deliverChannelMessage
                                                            ├─ POST /channel/acks (delivered_to_bridge)
-                                                           ├─ profile.mapChannelMessage(...)
+                                                           ├─ native: Claude inbox socket / Codex daemon turn/start
+                                                           ├─ else profile.mapChannelMessage(...)
                                                            ├─ server.notification(...)
-                                                           │   • Claude → notifications/claude/channel
+                                                           │   • Claude (legacy) → notifications/claude/channel
                                                            │   • Codex/Gemini → notifications/message
                                                            └─ POST /channel/acks (displayed_to_client)
                                                                                 │

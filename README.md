@@ -268,7 +268,7 @@ oab doctor
 # 5. Use it in any project
 cd /path/to/your/project
 oab init                 # wizard: identity + clients → writes .mcp.json + starts the registry
-oab claude --identity dev
+claude                   # or codex — messages arrive as a new turn in the live session
 ```
 
 ### Install — Path B: you already cloned the repo
@@ -402,10 +402,11 @@ The trade-off: channel traffic lives in its own Codex thread, so it does not
 appear in the user's TUI. The bridge prints the thread id at startup, and
 `codex resume <id>` reopens that conversation.
 
-A plain `codex` command still starts an isolated session that the bridge cannot
-inject into; attach with `codex --remote ws://127.0.0.1:<port>` if you want the
-TUI wired to the same app-server. On an app-server too old to know
-`thread/start`, the bridge falls back to following the TUI's thread as before.
+With the bridge running, routing prefers it over the native path, so messages for
+that project land in the bridge's thread rather than in a `codex` TUI you opened
+yourself. On codex ≥ 0.162 you rarely need it: plain `codex` already receives
+messages in its live TUI. On an app-server too old to know `thread/start`, the
+bridge falls back to following the TUI's thread as before.
 
 ### Antigravity (agy)
 
@@ -991,9 +992,9 @@ pnpm run dev -- codex tmux-bind      # bind current tmux pane to this session
 pnpm run dev -- codex tmux-sidecar   # poll and inject pending channel messages
 ```
 
-**Troubleshooting — `delivered_to_bridge` stuck without a Codex TUI**
+**Troubleshooting — a Codex peer stuck at `delivered_to_bridge`**
 
-If Claude Code (or any sender) sees status `delivered_to_bridge` for a Codex peer but Codex never picks the turn up, the most common cause is that the Codex TUI is running in **isolated mode** (plain `codex`) instead of attached to the bridge's app-server. The bridge daemon's app-server has nothing to inject into. Fix by either:
+Start with `oab doctor`: on codex ≥ 0.162 with the MCP server registered, a plain `codex` TUI receives the message natively. A busy session gets it when its current turn ends; while it waits, or when no live Codex session exists for the project, the message stays at `delivered_to_bridge` and the next registry sync retries it. On older Codex a plain `codex` session is isolated and the bridge has nothing to inject into — fix by either:
 
 ```bash
 # Option A — let the bridge launch and attach Codex for you
@@ -1004,7 +1005,7 @@ pnpm run dev -- codex app-bridge --project /path/to/codex-project
 codex --remote ws://127.0.0.1:4500
 ```
 
-The inner MCP client of an isolated `codex` session still registers with the registry, so `channel_inbox(pendingOnly=true)` will surface the message — but the agent has to call it manually instead of receiving an automatic turn injection. The full diagnosis ladder lives in the `agent-bridge` skill.
+On those older releases, the inner MCP client of an isolated `codex` session still registers with the registry, so `channel_inbox(pendingOnly=true)` will surface the message — but the agent has to call it manually instead of receiving an automatic turn injection. The full diagnosis ladder lives in the `agent-bridge` skill.
 
 ---
 
