@@ -1,6 +1,6 @@
 ---
 name: open-agent-bridge
-description: Use when sending or replying to channel messages between agents (Claude Code, OpenCode, Codex, Gemini). Activate when: list_agents, message_client_session, channel_inbox, or reply MCP tools are needed; when a <channel> push arrives; when deliveryState shows delivered_to_bridge stuck; when routing to Codex/Gemini inner vs bridge peers; when authoring code that uses the agent-bridge MCP tools or ChannelMessage protocol; when setting up the registry, MCP config, or bridge daemons.
+description: "Use when sending or replying to channel messages between agents (Claude Code, OpenCode, Codex, pi, Antigravity). Activate when: list_agents, message_client_session, channel_inbox, or reply MCP tools are needed; when an open-agent-bridge channel message arrives as a new turn; when deliveryState shows delivered_to_bridge stuck; when routing to inner clients vs bridge peers; when authoring code that uses the agent-bridge MCP tools or ChannelMessage protocol; when setting up the registry, MCP config, or bridge daemons."
 ---
 
 # open-agent-bridge
