@@ -68,13 +68,15 @@ env -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN pnpm test
 
 ### Trying delivery end to end
 
-Two terminals on the same identity, in two different projects:
+Two or three terminals on the same identity, in different projects. Run `oab init --yes --client claude,codex --identity e2e` once in each project, then:
 
 ```bash
-oab claude --identity e2e     # terminal 1, project A
-oab claude --identity e2e     # terminal 2, project B
-oab codex start --identity e2e   # optional: terminal 3, a Codex peer
+claude      # terminal 1, project A
+claude      # terminal 2, project B
+codex       # optional: terminal 3, project C (codex ≥ 0.162)
 ```
+
+`oab doctor` should show both `client: claude (native push)` and `client: codex (native push)` in green first.
 
 Ask the first session to message the other, for example "send project B a message asking for its git branch". It should arrive in the second session as a new turn, even if that session is idle. Then its reply should arrive back as a turn in the first session. `oab list` and the dashboard (`http://localhost:4999/dashboard`) show peers, conversations and ACK states.
 

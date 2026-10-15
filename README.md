@@ -19,6 +19,7 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
 <summary><strong>Table of Contents</strong></summary>
 
 - [TL;DR — 60-second quickstart](#tldr--60-second-quickstart)
+  - [Setup at a glance](#setup-at-a-glance)
 - [Why open-agent-bridge?](#why-open-agent-bridge)
 - [How it works](#how-it-works)
 - [Getting started](#getting-started)
@@ -80,9 +81,27 @@ bash bin/install.sh
 cd /path/to/your/project
 oab init                      # interactive wizard (identity + clients)
 
-# 3. Launch Claude Code wired to the bridge
-oab claude --identity dev
+# 3. Open your agents as usual — incoming messages arrive as a new turn in each live session
+claude                        # Claude Code ≥ 2.1.224
+codex                         # codex ≥ 0.162
+oab doctor                    # optional: confirms both get native delivery
 ```
+
+### Setup at a glance
+
+| Client | One-time setup | Daily use | How messages arrive |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** ≥ 2.1.224 | `oab init` (writes `.mcp.json`) or the plugin | `claude` | New turn in the live session (Claude Code's inbox socket) |
+| **Codex** ≥ 0.162 | `oab init --client codex` or the plugin | `codex` | New turn in the live TUI (Codex's app-server daemon) |
+| **OpenCode** | `oab init --client opencode` (installs the plugin) | `opencode` | New prompt in the active session (plugin) |
+| **Antigravity** (`agy`) | `oab init --client antigravity`, then `oab antigravity ls-push` | `agy` | New user turn via its language server |
+
+No flags, no extra daemons for Claude Code and Codex: the MCP adapter each session already starts does the delivery. Two fallbacks remain for older releases or special cases:
+
+- Claude Code < 2.1.224 → `oab claude --legacy-channels` (`<channel>` push via the dev-channels flag).
+- Codex < 0.162, or Codex with no TUI open (headless) → `oab codex start` (a bridge that owns its own Codex thread).
+
+Pick a private namespace with `oab init --identity <name>`; it is written into each client's project config (`.mcp.json`, `.codex/config.toml`), so the plain `claude` / `codex` commands pick it up. Codex only reads a project's `.codex/config.toml` when the project is trusted.
 
 ### Or install it as a plugin
 
@@ -123,7 +142,8 @@ Prefer explicit commands? The wizard is optional:
 ```bash
 oab up                                    # registry in the background (idempotent)
 oab mcp config --write --identity dev     # write/merge .mcp.json with an identity
-oab claude --identity dev                 # launch Claude wired to the bridge (native push, no dev flag)
+oab init --client codex --identity dev    # register the MCP server with Codex (+ project identity)
+claude                                    # or codex — native delivery, no flags
 oab status                                # registry health + agents + .mcp.json
 oab doctor                                # diagnose your environment
 oab down                                  # stop the background registry
@@ -272,7 +292,9 @@ oab doctor               # validate environment + PATH
 
 ### What `oab init` does
 
-In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), registers the MCP server with **Codex** via `codex mcp add` (Codex ignores `.mcp.json` — it only loads servers from `~/.codex/config.toml`), and prints the exact launch command per client.
+In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), registers the MCP server with **Codex** via `codex mcp add`, and prints the next step per client (plain `claude` / `codex`).
+
+Codex ignores `.mcp.json` and loads servers from `~/.codex/config.toml`, which is **global**. So `init` writes only the command there, with no project and no identity: Codex starts the adapter in each session's directory, which already identifies the project. A non-`global` identity goes into the project's own `.codex/config.toml` instead. Configs written by older versions pinned `AGENT_BRIDGE_PROJECT` globally, which made every Codex session register as one project; `oab doctor` flags it, and re-running `oab init --client codex` rewrites it.
 
 The registry exposes:
 
@@ -292,17 +314,13 @@ Once the registry is running and `.mcp.json` is in place, each AI client connect
 
 ### Claude Code
 
-The easy way — ensures the registry is up, writes `.mcp.json` if missing, sets the identity, and launches Claude:
-
-```bash
-oab claude --identity dev
-```
-
-Equivalent manual command — just plain `claude` in a project whose `.mcp.json` (or the plugin) registers `open-agent-bridge`:
+Just run `claude` in a project whose `.mcp.json` (written by `oab init`) or the installed plugin registers `open-agent-bridge`:
 
 ```bash
 claude
 ```
+
+`oab claude --identity dev` is a shortcut that also starts the registry if needed, writes `.mcp.json` when missing, and sets the identity before launching `claude`.
 
 **No `--dangerously-load-development-channels` needed.** Claude Code ≥ 2.1.224 ships
 cross-session messaging: every session binds an inbox socket and exports
@@ -428,7 +446,9 @@ open-agent-bridge mcp start --project /path --identity ticket-123
 open-agent-bridge antigravity install-plugin --project /path --identity ticket-123
 open-agent-bridge antigravity ls-push        --project /path --identity ticket-123
 
-# Codex
+# Codex — writes the identity into /path/.codex/config.toml; then run plain `codex` there
+open-agent-bridge init --client codex --project /path --identity ticket-123
+# Codex headless bridge
 open-agent-bridge codex start --project /path --identity ticket-123
 ```
 
@@ -1149,7 +1169,7 @@ Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`).
 | `mcp status` | Show live agents and registered MCP tools. |
 | `mcp server` | Start the MCP adapter in HTTP/SSE mode (port 6000). |
 | `opencode install-plugin` | Install the local OpenCode plugin bridge into a project or globally. |
-| `codex start` | One-command: registry + bridge + Codex TUI. |
+| `codex start` | Headless Codex: registry + bridge that owns its own thread + Codex TUI (codex < 0.162, or no TUI). On codex ≥ 0.162 plain `codex` already gets messages. |
 | `codex app-bridge` | Start the Codex app-server bridge daemon only. |
 | `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
 | `codex tmux-sidecar` | Poll and inject pending channel messages into a tmux pane. |
