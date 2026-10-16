@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { isRegistryUp, whichBinary, DEFAULT_REGISTRY_URL } from "../lib/runtime.js";
@@ -106,7 +106,13 @@ export function registerDoctorCommand(program: Command): void {
         {
           bin: "opencode",
           name: "OpenCode plugin",
-          files: [resolve(".opencode/plugins/agent-bridge.ts"), join(homedir(), ".config/opencode/plugins/agent-bridge.ts")],
+          // The single-file agent-bridge.ts layout predates the terminal half (tui.ts).
+          files: [
+            resolve(".opencode/plugins/open-agent-bridge/index.ts"),
+            join(homedir(), ".config/opencode/plugins/open-agent-bridge/index.ts"),
+            resolve(".opencode/plugins/agent-bridge.ts"),
+            join(homedir(), ".config/opencode/plugins/agent-bridge.ts"),
+          ],
           fix: "oab opencode install-plugin",
         },
         {
@@ -125,8 +131,9 @@ export function registerDoctorCommand(program: Command): void {
       for (const c of inHost) {
         if (!whichBinary(c.bin)) continue;
         const found = c.files.find((f) => existsSync(f));
-        // The pre-2026-10 OpenCode plugin (no default export) fails to load on OpenCode 2.
-        const outdated = c.bin === "opencode" && found && !readFileSync(found, "utf-8").includes('id: "open-agent-bridge"');
+        // An OpenCode plugin without its terminal half cannot show delivered messages.
+        const outdated =
+          c.bin === "opencode" && found && (found.endsWith("agent-bridge.ts") || !existsSync(join(dirname(found), "tui.ts")));
         checks.push({
           name: `${c.name} (native push)`,
           ok: Boolean(found) && !outdated,
