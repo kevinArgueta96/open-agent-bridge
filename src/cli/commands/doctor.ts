@@ -13,6 +13,14 @@ import { MCP_SERVER_NAME } from "../lib/mcp-config.js";
 import { claudeSupportsInboxSocket } from "../../client/claude-inbox-socket.js";
 import { codexSupportsDaemon } from "../../client/codex-daemon-socket.js";
 
+function agyPluginList(): string {
+  try {
+    return execFileSync("agy", ["plugin", "list", "--json"], { encoding: "utf8", timeout: 10_000 });
+  } catch {
+    return "";
+  }
+}
+
 function versionOf(bin: string): string | null {
   try {
     return execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 5_000 }).trim();
@@ -123,14 +131,16 @@ export function registerDoctorCommand(program: Command): void {
         },
         {
           bin: "agy",
-          name: "agy sidecar",
-          files: [join(homedir(), ".gemini/config/sidecars/open-agent-bridge/sidecar.json")],
-          fix: "oab antigravity install-sidecar",
+          name: "agy plugin (MCP + hooks)",
+          files: [],
+          fix: "oab antigravity install-plugin",
+          // agy keeps its plugins in its own store; ask it.
+          lookup: () => (/"name"\s*:\s*"oab"/.test(agyPluginList()) ? "installed in agy (oab)" : undefined),
         },
       ];
-      for (const c of inHost) {
+      for (const c of inHost as Array<(typeof inHost)[number] & { lookup?: () => string | undefined }>) {
         if (!whichBinary(c.bin)) continue;
-        const found = c.files.find((f) => existsSync(f));
+        const found = c.lookup ? c.lookup() : c.files.find((f) => existsSync(f));
         // An OpenCode plugin without its terminal half cannot show delivered messages.
         const outdated =
           c.bin === "opencode" && found && (found.endsWith("agent-bridge.ts") || !existsSync(join(dirname(found), "tui.ts")));

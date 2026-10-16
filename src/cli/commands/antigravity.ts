@@ -1,6 +1,8 @@
-import { mkdirSync, readlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { appendOriginalRequest } from "../../client/antigravity-agents-file.js";
@@ -10,10 +12,10 @@ import {
 } from "../../client/antigravity-hooks.js";
 import { collectPendingForClient } from "../../client/antigravity-pending.js";
 import { AntigravityLsBridgeService } from "../../client/antigravity-ls-bridge-service.js";
-import { getActiveCascadeId, lsTargetFromEnv, sendUserCascadeMessage } from "../../client/antigravity-ls-client.js";
-import { listenHostInbox } from "../../client/host-inbox-socket.js";
-import { buildMcpServerEntry, defaultMcpMode } from "../lib/mcp-config.js";
+import { lsTargetFromEnv, readAgyConversation, writeAgyConversation } from "../../client/antigravity-ls-client.js";
 import { RegistryClient } from "../../client/registry-client.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Read all of stdin (hook event payload). Resolves "" if nothing is piped. */
 async function readStdin(): Promise<string> {
@@ -26,6 +28,56 @@ async function readStdin(): Promise<string> {
 /** Emit the hook result as JSON on stdout (Antigravity parses stdout as JSON). */
 function emitHookOutput(output: unknown): void {
   process.stdout.write(JSON.stringify(output));
+}
+
+interface HookPayload {
+  conversationId?: string;
+  workspacePaths?: string[];
+}
+
+function parseHookPayload(raw: string): HookPayload {
+  try {
+    return JSON.parse(raw) as HookPayload;
+  } catch {
+    return {};
+  }
+}
+
+/** The agy process running this hook. agy runs hooks through `sh -c`, so skip shells. */
+function agyPidOfHook(): number | undefined {
+  let pid = process.ppid;
+  for (let i = 0; i < 4 && pid > 1; i++) {
+    const [ppid, comm = ""] = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8" })
+      .trim()
+      .split(/\s+/, 2);
+    if (!/^(sh|bash|dash|zsh|env)$/.test(basename(comm))) return pid;
+    pid = Number(ppid);
+  }
+  return undefined;
+}
+
+/**
+ * Hand this session's conversation to the MCP adapter, which then starts turns
+ * in it while agy is idle. Only `attach` (run by agy's agent) sees the LS token;
+ * hooks only see the conversation, so they refresh the one `attach` recorded —
+ * that follows /new and resumes. Returns whether live delivery is on.
+ */
+function recordAgyConversation(payload: HookPayload): boolean {
+  try {
+    const agyPid = agyPidOfHook();
+    const target = lsTargetFromEnv() ?? (agyPid ? readAgyConversation(agyPid) : undefined);
+    const cascadeId = payload.conversationId ?? process.env.ANTIGRAVITY_CONVERSATION_ID;
+    if (target?.csrf && cascadeId && agyPid) {
+      writeAgyConversation(agyPid, { url: target.url, csrf: target.csrf, cascadeId });
+      return true;
+    }
+    // agy logs hook stderr: say which piece is missing (names only, never values).
+    const missing = [!target?.csrf && "LS address/token (run `open-agent-bridge antigravity attach` from agy)", !cascadeId && "conversation id", !agyPid && "agy pid"];
+    console.error(`[antigravity] live delivery off — missing ${missing.filter(Boolean).join(", ")}`);
+  } catch (err) {
+    console.error("[antigravity] could not record the conversation:", err instanceof Error ? err.message : err);
+  }
+  return false;
 }
 
 async function resolveClientId(
@@ -55,72 +107,56 @@ export function registerAntigravityCommand(program: Command): void {
     .description("Antigravity CLI (`agy`) integration: native channels via MCP + hooks");
 
   // ── antigravity install-plugin ───────────────────────────────────────────────
+  // The shared plugin (the one Claude Code and Codex install) also carries agy's
+  // pieces: mcp_config.json, hooks.json (the hooks that hand the adapter agy's
+  // live conversation) and the skill.
   antigravity
     .command("install-plugin")
-    .description(
-      "Write the open-agent-bridge MCP config + lifecycle hooks so `agy` delivers " +
-        "channel messages automatically (Stop hook auto-continue).",
-    )
-    .option("--project <path>", "Workspace to install into", process.cwd())
-    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
-    .option("--bridge-command <cmd>", "open-agent-bridge executable", "open-agent-bridge")
-    .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
-    .option("--global", "Install into ~/.gemini/antigravity-cli instead of the workspace .agents/")
-    .action((options) => {
-      const targetDir = options.global
-        ? join(homedir(), ".gemini", "antigravity-cli")
-        : join(options.project, ".agents");
-      mkdirSync(targetDir, { recursive: true });
+    .description("Install the open-agent-bridge plugin into agy: MCP server, hooks for live delivery, and the skill")
+    .action(() => {
+      const pluginDir = resolve(__dirname, "../../../plugins/open-agent-bridge");
+      if (!existsSync(join(pluginDir, "plugin.json"))) {
+        console.error(chalk.red("✗") + ` plugin not found at ${pluginDir}`);
+        process.exit(1);
+      }
+      try {
+        execFileSync("agy", ["plugin", "install", pluginDir], { stdio: "inherit" });
+      } catch {
+        console.error(chalk.red("✗") + " `agy plugin install` failed — is agy ≥ 1.3 on PATH?");
+        process.exit(1);
+      }
+      // Where the sidecar lived before plugins carried it; agy no longer loads it.
+      rmSync(join(homedir(), ".gemini", "config", "sidecars", "open-agent-bridge"), { recursive: true, force: true });
+      console.log(chalk.green("✓") + " open-agent-bridge plugin installed in agy — restart agy to load it.");
+    });
 
-      // A global config applies to every agy workspace: never pin a project there.
-      const mcpArgs = ["mcp", "start", "--registry-url", options.registryUrl];
-      if (!options.global) mcpArgs.push("--project", options.project);
-      if (options.identity) mcpArgs.push("--identity", options.identity);
-      const mcpConfig = {
-        mcpServers: {
-          "agent-bridge": {
-            command: options.bridgeCommand,
-            args: mcpArgs,
-          },
-        },
-      };
-      writeFileSync(
-        join(targetDir, "mcp_config.json"),
-        `${JSON.stringify(mcpConfig, null, 2)}\n`,
-        "utf8",
-      );
-
-      // NOTE: we intentionally do NOT write hooks.json. agy's hooks schema
-      // (jsonhook.JSONHookSpec) differs from what we generated and failed to
-      // parse, and the Stop-hook auto-arrival is superseded by `ls-push`
-      // (native push into the live TUI via the Cascade Language Server).
-
-      console.log(chalk.green("✓") + " Antigravity MCP config installed");
-      console.log(`  Target:   ${targetDir}`);
-      console.log(`  Registry: ${options.registryUrl}`);
-      console.log("  File:     mcp_config.json");
-      console.log(
-        chalk.dim(
-          "\n  1. Restart `agy` in this workspace so it loads the MCP server.\n" +
-            "  2. For delivery into the live session, install the sidecar once:\n" +
-            "       open-agent-bridge antigravity install-sidecar",
-        ),
-      );
+  // ── antigravity attach ───────────────────────────────────────────────────────
+  // agy gives its LS address and token to the commands its agent runs, not to
+  // hooks or MCP servers — so the agent runs this once per conversation.
+  antigravity
+    .command("attach")
+    .description("Run from inside agy (by its agent): let open-agent-bridge start turns in this conversation")
+    .action(() => {
+      if (recordAgyConversation({})) console.log("open-agent-bridge: live delivery on for this agy session.");
+      else process.exitCode = 1;
     });
 
   // ── antigravity hook-stop ────────────────────────────────────────────────────
   antigravity
     .command("hook-stop")
     .description("Stop hook: deliver pending channel messages and force agy to continue")
-    .option("--project <path>", "Workspace path", process.cwd())
+    .option("--project <path>", "Workspace path (default: the hook's workspace)")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--client-id <id>", "Explicit Antigravity client session ID")
     .option("--identity <id>", "Channel namespace to resolve the session for (default: global)")
     .action(async (options) => {
-      await readStdin(); // consume the hook event payload (unused for now)
+      const payload = parseHookPayload(await readStdin());
+      recordAgyConversation(payload);
+      // Plugin hooks run in the plugin's directory, not the workspace.
+      const project: string = options.project ?? payload.workspacePaths?.[0] ?? process.cwd();
       try {
         const registry = new RegistryClient(options.registryUrl);
-        const clientId = await resolveClientId(registry, options.project, options.clientId, options.identity);
+        const clientId = await resolveClientId(registry, project, options.clientId, options.identity);
         if (!clientId) {
           emitHookOutput({});
           return;
@@ -128,7 +164,7 @@ export function registerAntigravityCommand(program: Command): void {
 
         const pending = await collectPendingForClient(registry, clientId);
         for (const msg of pending) {
-          appendOriginalRequest(options.project, {
+          appendOriginalRequest(project, {
             messageId: msg.messageId,
             fromAgentId: msg.fromAgentId,
             fromAgentName: msg.fromAgentName,
@@ -148,26 +184,24 @@ export function registerAntigravityCommand(program: Command): void {
   // ── antigravity hook-session-start ───────────────────────────────────────────
   antigravity
     .command("hook-session-start")
-    .description("SessionStart hook: surface pending channel messages as context")
-    .option("--project <path>", "Workspace path", process.cwd())
+    .description("SessionStart hook: attach live delivery and surface pending channel messages")
+    .option("--project <path>", "Workspace path (default: the hook's workspace)")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--client-id <id>", "Explicit Antigravity client session ID")
     .option("--identity <id>", "Channel namespace to resolve the session for (default: global)")
     .action(async (options) => {
-      await readStdin();
+      const payload = parseHookPayload(await readStdin());
+      const attached = recordAgyConversation(payload);
+      const project: string = options.project ?? payload.workspacePaths?.[0] ?? process.cwd();
+      let pending = 0;
       try {
         const registry = new RegistryClient(options.registryUrl);
-        const clientId = await resolveClientId(registry, options.project, options.clientId, options.identity);
-        if (!clientId) {
-          emitHookOutput({});
-          return;
-        }
-        const pending = await collectPendingForClient(registry, clientId);
-        emitHookOutput(buildSessionStartHookOutput(pending.length));
+        const clientId = await resolveClientId(registry, project, options.clientId, options.identity);
+        if (clientId) pending = (await collectPendingForClient(registry, clientId)).length;
       } catch (err) {
         console.error("[antigravity hook-session-start]", err instanceof Error ? err.message : err);
-        emitHookOutput({});
       }
+      emitHookOutput(buildSessionStartHookOutput(pending, { attached }));
     });
 
   // ── antigravity ls-push ──────────────────────────────────────────────────────
@@ -206,73 +240,5 @@ export function registerAntigravityCommand(program: Command): void {
           ` Antigravity ls-push running (project: ${options.project}, identity: ${options.identity ?? "global"}). Ctrl-C to stop.`,
       );
       await service.start();
-    });
-
-  // ── antigravity sidecar / install-sidecar ────────────────────────────────────
-  // agy ≥ 1.3 only accepts language-server RPCs with a CSRF token it hands to
-  // its sidecars, so the in-process half of native delivery is a sidecar: agy
-  // starts it with the LS address + token, and it serves the host inbox socket
-  // of that agy process for the MCP adapter (agy's other child).
-  antigravity
-    .command("sidecar")
-    .description("Run as an agy sidecar (agy starts this; see install-sidecar): turns the adapter's messages into turns")
-    .action(async () => {
-      const agyPid = process.ppid;
-      const target = lsTargetFromEnv();
-      let workspace = process.env.ANTIGRAVITY_WORKSPACE ?? "";
-      try {
-        workspace ||= readlinkSync(`/proc/${agyPid}/cwd`);
-      } catch {
-        // not Linux — fall back to the most recent conversation
-      }
-      const vars = Object.keys(process.env).filter((k) => k.startsWith("ANTIGRAVITY_"));
-      console.error(
-        `[oab sidecar] agy pid ${agyPid} · workspace ${workspace || "?"} · LS ${target ? "found" : "MISSING"} · ` +
-          `csrf ${target?.csrf ? "present" : "missing"} · env: ${vars.join(",")}`,
-      );
-      const keepAlive = setInterval(() => {}, 1 << 30); // restart_policy "always" must not see us exit
-      if (!target?.csrf) {
-        // Without the token every RPC is refused. Not listening lets the adapter
-        // see there is no inbox and keep messages pending instead of losing them.
-        console.error("[oab sidecar] no language-server address/token from agy — inbox disabled");
-        return;
-      }
-      await listenHostInbox(agyPid, async (text) => {
-        try {
-          const cascadeId = process.env.ANTIGRAVITY_CONVERSATION_ID || (await getActiveCascadeId(target, workspace));
-          if (!cascadeId) throw new Error("no open conversation in this workspace");
-          await sendUserCascadeMessage(target, cascadeId, text);
-        } catch (err) {
-          console.error(`[oab sidecar] could not deliver: ${err instanceof Error ? err.message : err}`);
-        }
-      });
-      console.error(`[oab sidecar] inbox ready for agy ${agyPid}`);
-      void keepAlive;
-    });
-
-  antigravity
-    .command("install-sidecar")
-    .description("Install the open-agent-bridge sidecar for agy (~/.gemini/config/sidecars/open-agent-bridge)")
-    .action(() => {
-      const dir = join(homedir(), ".gemini", "config", "sidecars", "open-agent-bridge");
-      const entry = buildMcpServerEntry({ mode: defaultMcpMode() });
-      const args = [...entry.args.slice(0, -2), "antigravity", "sidecar"]; // swap "mcp start" for "antigravity sidecar"
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, "sidecar.json"),
-        `${JSON.stringify(
-          {
-            command: entry.command,
-            args,
-            restart_policy: "always",
-            description: "open-agent-bridge: delivers channel messages into this agy session",
-          },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-      console.log(chalk.green("✓") + ` agy sidecar installed at ${dir}`);
-      console.log(chalk.dim("  agy picks it up on its own; restart agy if it was already running."));
     });
 }

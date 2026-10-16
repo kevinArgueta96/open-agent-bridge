@@ -37,9 +37,10 @@ import {
 } from "../client/claude-inbox-socket.js";
 import { codexDaemonSocketPath, deliverViaCodexDaemon } from "../client/codex-daemon-socket.js";
 import { parentHostInboxSocket } from "../client/host-inbox-socket.js";
+import { readAgyConversation, sendUserCascadeMessage } from "../client/antigravity-ls-client.js";
 
-/** Clients whose in-process component (plugin / extension / sidecar) opens a host inbox socket. */
-const HOST_INBOX_CLIENTS = new Set(["opencode", "pi", "antigravity"]);
+/** Clients whose in-process component (plugin / extension) opens a host inbox socket. */
+const HOST_INBOX_CLIENTS = new Set(["opencode", "pi"]);
 import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
@@ -662,11 +663,27 @@ export class McpAgentBridge {
       return;
     }
 
-    // OpenCode, pi and Antigravity can only start a turn from inside their own
-    // process (plugin / extension / sidecar). That component listens on an
-    // inbox socket named after the agent's pid, and this adapter is the agent's
-    // child. Same frames as Claude Code; these agents ignore MCP notifications,
-    // so a miss stays pending for the next registry sync.
+    // Antigravity: the plugin's hooks leave agy's language server and live
+    // conversation for this adapter (agy's child), and SendUserCascadeMessage
+    // with WHEN_IDLE starts a turn there — at once if idle, after the running
+    // one otherwise. Before the first hook there is nothing to use: the message
+    // stays pending and the Stop hook or the next sync delivers it.
+    const agyConversation =
+      this.clientProfile.id === "antigravity" && !ownedBySiblingBridge ? readAgyConversation(process.ppid) : undefined;
+    if (agyConversation) {
+      injectTurn(
+        (prompt) => sendUserCascadeMessage(agyConversation, agyConversation.cascadeId, prompt).catch(() => false),
+        "Message sent to the live agy conversation",
+        { notifyOnFailure: false },
+      );
+      return;
+    }
+
+    // OpenCode and pi can only start a turn from inside their own process
+    // (plugin / extension). That component listens on an inbox socket named
+    // after the agent's pid, and this adapter is the agent's child. Same frames
+    // as Claude Code; these agents ignore MCP notifications, so a miss stays
+    // pending for the next registry sync.
     const hostInbox =
       HOST_INBOX_CLIENTS.has(this.clientProfile.id) && !ownedBySiblingBridge ? parentHostInboxSocket(process.env, this.resolvedProjectPath) : null;
     if (hostInbox) {
@@ -1904,7 +1921,8 @@ export class McpAgentBridge {
         this.clientProfile.id === "claude" ||
         this.clientProfile.id === "opencode" ||
         (this.clientProfile.id === "codex" && codexDaemonSocketPath() !== null) ||
-        (HOST_INBOX_CLIENTS.has(this.clientProfile.id) && parentHostInboxSocket(process.env, this.resolvedProjectPath) !== null);
+        (HOST_INBOX_CLIENTS.has(this.clientProfile.id) && parentHostInboxSocket(process.env, this.resolvedProjectPath) !== null) ||
+        (this.clientProfile.id === "antigravity" && readAgyConversation(process.ppid) !== undefined);
 
       // Phase 1 – always wait briefly for any delivery confirmation
       const deliveryAck = await this.conversationService.waitForAcknowledgement(

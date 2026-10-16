@@ -135,22 +135,12 @@ export function registerInitCommand(program: Command): void {
           }
         }
         if (client === "opencode" || client === "antigravity") {
+          // agy's plugin is installed into agy itself (all workspaces); OpenCode's into the project.
+          const args = client === "opencode" ? ["--project", projectPath] : [];
           try {
-            execFileSync(
-              process.execPath,
-              [resolveCliEntry(), client, "install-plugin", "--project", projectPath],
-              { stdio: "inherit" },
-            );
+            execFileSync(process.execPath, [resolveCliEntry(), client, "install-plugin", ...args], { stdio: "inherit" });
           } catch {
             warn(`Could not auto-configure ${client} — run \`oab ${client} install-plugin --project ${projectPath}\` manually`);
-          }
-        }
-        if (client === "antigravity") {
-          // The sidecar is agy's in-process half of native delivery (it holds the CSRF token).
-          try {
-            execFileSync(process.execPath, [resolveCliEntry(), "antigravity", "install-sidecar"], { stdio: "inherit" });
-          } catch {
-            warn("Could not install the agy sidecar — run `oab antigravity install-sidecar` manually");
           }
         }
       }
@@ -164,7 +154,7 @@ export function registerInitCommand(program: Command): void {
       if (clients.includes("codex"))
         lines.push(`Codex:        ${chalk.cyan("codex")}   ${chalk.dim(`(codex < 0.162 or headless: oab codex start${idFlag})`)}`);
       if (clients.includes("opencode")) lines.push(`OpenCode:     ${chalk.cyan("opencode")}  ${chalk.dim("(plugin installed; OpenCode ≥ 1.18.29 or 2.x)")}`);
-      if (clients.includes("antigravity")) lines.push(`Antigravity:  ${chalk.cyan("agy")}       ${chalk.dim("(MCP + sidecar installed)")}`);
+      if (clients.includes("antigravity")) lines.push(`Antigravity:  ${chalk.cyan("agy")}       ${chalk.dim("(plugin installed: MCP + hooks)")}`);
       if (clients.includes("pi")) lines.push(`pi:           ${chalk.cyan("pi")}`);
       lines.push(`Status:       ${chalk.cyan("oab status")}`);
       lines.push(`Stop hub:     ${chalk.cyan("oab down")}`);

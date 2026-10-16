@@ -1,0 +1,5 @@
+{
+  "name": "oab",
+  "version": "0.1.0",
+  "description": "Local agent communication hub — talk to your other Claude, Codex, OpenCode, pi and Antigravity sessions from this one."
+}

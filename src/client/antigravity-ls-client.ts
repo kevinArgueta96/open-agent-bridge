@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -76,11 +76,41 @@ export interface LsTarget {
   csrf?: string;
 }
 
-/** The language server of the agy process that started us as a sidecar. */
+/** The language server of the agy process that ran this command (agy hands its
+ *  address and token to the commands it runs, hooks included). */
 export function lsTargetFromEnv(env: NodeJS.ProcessEnv = process.env): LsTarget | undefined {
   const address = env.ANTIGRAVITY_LS_ADDRESS;
   if (!address) return undefined;
   return { url: address.startsWith("http") ? address : `http://${address}`, csrf: env.ANTIGRAVITY_CSRF_TOKEN };
+}
+
+/** An agy session's live conversation and the language server that runs it. */
+export interface AgyConversation extends LsTarget {
+  cascadeId: string;
+}
+
+/**
+ * agy gives MCP servers neither the LS address nor the token, but its hooks get
+ * both. A hook leaves them here, keyed by the agy pid, for the MCP adapter (agy's
+ * direct child) to find. 0600 in a 0700 directory, like the host inbox sockets.
+ */
+export function agyConversationPath(agyPid: number, env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.XDG_RUNTIME_DIR || tmpdir(), "open-agent-bridge", `agy-${agyPid}.json`);
+}
+
+export function writeAgyConversation(agyPid: number, conversation: AgyConversation, env: NodeJS.ProcessEnv = process.env): void {
+  const path = agyConversationPath(agyPid, env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(conversation), { mode: 0o600 });
+}
+
+export function readAgyConversation(agyPid: number, env: NodeJS.ProcessEnv = process.env): AgyConversation | undefined {
+  try {
+    const c = JSON.parse(readFileSync(agyConversationPath(agyPid, env), "utf8")) as AgyConversation;
+    return c.url && c.csrf && c.cascadeId ? c : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function rpc(target: number | LsTarget, method: string, body: unknown): Promise<unknown> {
@@ -153,6 +183,23 @@ export async function getActiveCascadeId(
   return pickActiveCascadeId(resp, projectPath);
 }
 
+interface TrajectoryResponse {
+  trajectory?: { steps?: Array<{ userInput?: { userConfig?: unknown; userAgentSpec?: unknown } }> };
+}
+
+/** What the user's last message ran with: agy refuses a turn without a plan
+ *  model, and reusing the TUI's config keeps the model and agent the user picked.
+ *  ponytail: fetches the whole trajectory per delivery; page it if conversations get huge. */
+async function lastUserTurnConfig(target: number | LsTarget, cascadeId: string): Promise<Record<string, unknown>> {
+  const resp = (await rpc(target, "GetCascadeTrajectory", { cascadeId })) as TrajectoryResponse;
+  const steps = resp.trajectory?.steps ?? [];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const input = steps[i].userInput;
+    if (input?.userConfig) return { cascadeConfig: input.userConfig, customAgentSpec: input.userAgentSpec };
+  }
+  return {};
+}
+
 /** Inject a USER message into the live cascade — this triggers a real turn, so
  *  `agy` processes it without the user typing. `messageOrigin` tags the source
  *  (a known enum) so agy treats it as an external/SDK-driven message. Returns
@@ -165,6 +212,7 @@ export async function sendUserCascadeMessage(
   await rpc(target, "SendUserCascadeMessage", {
     cascadeId,
     items: [{ text }],
+    ...(await lastUserTurnConfig(target, cascadeId)),
     // Enum names from agy 1.3.4 (`exa.cortex_pb`); the old MESSAGE_ORIGIN_* value does not exist.
     messageOrigin: "AGENT_MESSAGE_ORIGIN_SDK_EXECUTABLE",
     // Queue behind a running turn instead of being rejected or interrupting it.
