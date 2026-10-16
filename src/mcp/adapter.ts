@@ -589,12 +589,6 @@ export class McpAgentBridge {
     const notification = this.clientProfile.mapChannelMessage(channelMessage);
     if (!notification) return;
 
-    // Antigravity native push: agy declares the `elicitation` capability but not
-    // `sampling`, and it ignores `notifications/message`. So instead of waiting
-    // for a turn (hook-driven), push the message as an `elicitation/create`
-    // request — agy surfaces it as a live interaction even when idle, and its
-    // answer is relayed straight back to the channel. Falls back to the
-    // notification path if the elicit is declined / times out / unsupported.
     // Claude Code native push: sessions with cross-session messaging (CC ≥
     // 2.1.224) export their inbox socket to child processes, and the adapter
     // is one. Injecting the message as a `user` frame starts a real turn even
@@ -695,16 +689,9 @@ export class McpAgentBridge {
       return;
     }
 
-    if (this.clientProfile.id === "antigravity" && this.clientCapabilities.elicitation) {
-      this.surfacedInboxMessageIds.add(channelMessage.messageId);
-      void this.tryElicitPush(channelMessage).then((delivered) => {
-        if (!delivered) {
-          this.surfacedInboxMessageIds.delete(channelMessage.messageId);
-          this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
-        }
-      });
-      return;
-    }
+    // agy before its agent ran `attach`: agy ignores MCP notifications, and an
+    // ack here would hide the message from the Stop hook. Leave it pending.
+    if (this.clientProfile.id === "antigravity" && !ownedBySiblingBridge) return;
 
     this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
   }
@@ -738,52 +725,6 @@ export class McpAgentBridge {
         }
       }
     });
-  }
-
-  /** Push a channel message to an Antigravity client via MCP `elicitation/create`
-   *  and relay its answer back to the channel as a reply. Returns true only when
-   *  agy accepted and provided a reply (so the caller can mark it surfaced);
-   *  false on decline/cancel/timeout/error so the caller falls back. */
-  private async tryElicitPush(channelMessage: ChannelMessage): Promise<boolean> {
-    const sender = channelMessage.fromAgentName ?? channelMessage.fromAgentId;
-    try {
-      const result = await this.server.server.elicitInput({
-        message:
-          `📨 New open-agent-bridge channel message from ${sender}:\n\n` +
-          `${channelMessage.content}\n\n` +
-          "Type your reply below to send it back through the channel.",
-        requestedSchema: {
-          type: "object",
-          properties: {
-            reply: {
-              type: "string",
-              description: "Your reply to send back to the sender via the channel",
-            },
-          },
-          required: ["reply"],
-        },
-      });
-
-      if (result.action !== "accept") return false;
-      const reply = (result.content as { reply?: string } | undefined)?.reply;
-      if (!reply || !reply.trim()) return false;
-
-      await this.conversationService.replyAndAcknowledge({
-        agentId: channelMessage.fromAgentId,
-        conversationId: channelMessage.conversationId,
-        replyTo: channelMessage.messageId,
-        kind: "chat",
-        message: reply,
-        requiresAck: true,
-        expectsResponse: false,
-        acknowledgementState: "answered",
-        acknowledgementDetail: "Reply sent via Antigravity elicitation push",
-      });
-      return true;
-    } catch (err) {
-      console.error(`[MCP] elicitation push failed for ${channelMessage.messageId}: ${String(err)}`);
-      return false;
-    }
   }
 
   private async tryPushNotification(
