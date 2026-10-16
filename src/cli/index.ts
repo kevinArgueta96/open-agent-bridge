@@ -22,6 +22,7 @@ import { registerCodexCommand } from "./commands/codex.js";
 import { registerAntigravityCommand } from "./commands/antigravity.js";
 import { registerOpenCodeCommand } from "./commands/opencode.js";
 import { registerPiCommand } from "./commands/pi.js";
+import { registerPromptCommand } from "./commands/prompt.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,5 +65,6 @@ registerCodexCommand(program);
 registerAntigravityCommand(program);
 registerOpenCodeCommand(program);
 registerPiCommand(program);
+registerPromptCommand(program);
 
 program.parse(process.argv);
