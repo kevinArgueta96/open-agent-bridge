@@ -32,6 +32,17 @@ describe("host inbox socket", () => {
     expect(received).toEqual(["hello pi"]);
   });
 
+  it("starts one turn when two adapters (or a sync replay) write the same message", async () => {
+    const received: string[] = [];
+    close = await listenHostInbox(4244, (c) => received.push(c), env);
+    const socketPath = hostInboxSocketPath(4244, env);
+    await deliverViaClaudeInboxSocket("same", { socketPath, id: "msg-1" });
+    await deliverViaClaudeInboxSocket("same", { socketPath, id: "msg-1" });
+    await deliverViaClaudeInboxSocket("other", { socketPath, id: "msg-2" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toEqual(["same", "other"]);
+  });
+
   it("never forwards an inherited Claude Code token to another agent's socket", async () => {
     const lines: string[] = [];
     const saved = process.env.CLAUDE_CODE_MESSAGING_TOKEN;

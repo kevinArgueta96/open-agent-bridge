@@ -27,6 +27,8 @@ export interface ClaudeInboxSocketOptions {
   socketPath?: string;
   token?: string;
   timeoutMs?: number;
+  /** Channel message id, sent only to host inbox sockets so duplicate writes dedupe. */
+  id?: string;
 }
 
 /**
@@ -82,7 +84,7 @@ export function deliverViaClaudeInboxSocket(
     const socket = createConnection(socketPath, () => {
       const frames =
         (token ? `${JSON.stringify({ type: "auth", token })}\n` : "") +
-        `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
+        `${JSON.stringify({ type: "user", ...(options.id ? { id: options.id } : {}), message: { role: "user", content } })}\n`;
       socket.end(frames, () => done(true));
     });
     socket.on("error", () => done(false));

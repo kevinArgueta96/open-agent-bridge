@@ -671,7 +671,7 @@ export class McpAgentBridge {
       HOST_INBOX_CLIENTS.has(this.clientProfile.id) && !ownedBySiblingBridge ? parentHostInboxSocket(process.env, this.resolvedProjectPath) : null;
     if (hostInbox) {
       injectTurn(
-        (prompt) => deliverViaClaudeInboxSocket(prompt, { socketPath: hostInbox }),
+        (prompt) => deliverViaClaudeInboxSocket(prompt, { socketPath: hostInbox, id: channelMessage.messageId }),
         `Message written to the ${this.clientProfile.id} session inbox socket`,
         { notifyOnFailure: false },
       );

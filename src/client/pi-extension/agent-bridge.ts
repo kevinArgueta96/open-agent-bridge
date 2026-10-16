@@ -37,6 +37,7 @@ function listenHostInbox(hostPid: number, onMessage: (content: string) => void):
   const path = join(process.env.XDG_RUNTIME_DIR || tmpdir(), "open-agent-bridge", `inbox-${hostPid}.sock`);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   rmSync(path, { force: true });
+  const seen = new Set<string>();
   const server = createServer((conn) => {
     let buf = "";
     conn.setEncoding("utf8");
@@ -47,8 +48,16 @@ function listenHostInbox(hostPid: number, onMessage: (content: string) => void):
       for (const line of buf.split("\n")) {
         if (!line.trim()) continue;
         try {
-          const frame = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
-          if (frame.type === "user" && typeof frame.message?.content === "string") onMessage(frame.message.content);
+          const frame = JSON.parse(line) as { type?: string; id?: string; message?: { content?: unknown } };
+          if (frame.type !== "user" || typeof frame.message?.content !== "string") continue;
+          // Two adapters in one agent (an old MCP entry next to the plugin's) or a
+          // registry replay write the same message twice; start its turn once.
+          if (frame.id) {
+            if (seen.has(frame.id)) continue;
+            seen.add(frame.id);
+            if (seen.size > 500) seen.delete(seen.values().next().value as string);
+          }
+          onMessage(frame.message.content);
         } catch {
           // not a frame — ignore
         }
