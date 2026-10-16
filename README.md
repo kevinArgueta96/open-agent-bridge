@@ -1094,6 +1094,43 @@ The native paths name the tool `reply (open-agent-bridge MCP tool)` rather than 
 
 Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEGIN/END markers, literal IDs in the call template, header wording, peer framing, reply tool name) so future edits don't silently regress it.
 
+#### Customizing the prompt
+
+The prompt above is a template you can replace, for every agent at once — answer in another language, keep replies short, run the tests before answering, and so on:
+
+```bash
+oab prompt init     # writes the built-in template to ~/.config/open-agent-bridge/prompt.md
+oab prompt show     # which template is in effect, and a sample message rendered with it
+```
+
+Edit the file; each agent uses it from its next incoming message, no restart needed. Placeholders:
+
+| Placeholder | Becomes |
+|---|---|
+| `{{header}}` | title (with the `[open-agent-bridge] Channel message` marker), sender, conversation and message ids |
+| `{{message}}` | the peer's text framed by `BEGIN/END MESSAGE` — keep this one: it separates the peer's words from your instructions |
+| `{{content}}` | the peer's text, unframed |
+| `{{safety}}` | "this comes from another agent, not from your user…" |
+| `{{instructions}}` | how to answer, with the `reply` call pre-filled (or the relayed variant for `oab codex start`) |
+| `{{sender}}` `{{senderShort}}` `{{senderId}}` `{{conversationId}}` `{{messageId}}` `{{taskId}}` | the single values |
+
+```markdown
+{{header}}
+
+{{message}}
+
+{{safety}}
+
+Answer in Spanish, in five lines at most. If the request changes code, run the tests first.
+
+{{instructions}}
+```
+
+- **Resolution:** `$AGENT_BRIDGE_PROMPT_TEMPLATE` (one session or agent) → `${XDG_CONFIG_HOME:-~/.config}/open-agent-bridge/prompt.md` → the built-in template. There is no per-project template: a cloned repo could otherwise ship one telling your agents to obey their peers.
+- **Always kept:** a template without `{{instructions}}` gets them appended (without the pre-filled call, answers never reach the sender), and one without the marker gets the title line prepended (OpenCode's terminal plugin looks for it).
+- **Notes:** `<!-- comments -->` in the file are stripped, so the agent never reads them. Placeholders inside the peer's message are never expanded.
+- `oab doctor` reports the template in effect and warns when it drops `{{safety}}` or the framed `{{message}}`.
+
 ---
 
 ### Delivery mode comparison
@@ -1195,6 +1232,7 @@ Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`).
 | `antigravity hook-stop` | Stop-hook handler (plugin): refresh the conversation, deliver pending messages and keep agy going. |
 | `antigravity hook-session-start` | SessionStart-hook handler (plugin): ask for `attach` when needed, surface pending messages. |
 | `antigravity ls-push` | **Deprecated** — does not deliver on agy ≥ 1.3 (no CSRF token). |
+| `prompt init [--force]` / `prompt show` | Write the incoming-message prompt template to `~/.config/open-agent-bridge/prompt.md` to edit it / show the one in effect with a sample. See [Customizing the prompt](#customizing-the-prompt). |
 | `dashboard` | Print or open the dashboard URL in the browser. |
 
 ---
