@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,15 @@ import type { Command } from "commander";
 import chalk from "chalk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** Installed OpenCode's major version; 2 when it cannot be told (the current one). */
+function openCodeMajor(): number {
+  try {
+    return Number(/(\d+)\./.exec(execFileSync("opencode", ["--version"], { encoding: "utf8" }))?.[1] ?? 2);
+  } catch {
+    return 2;
+  }
+}
 
 /** Resolve the directory where the plugin source files live. Works for both
  *  the compiled dist/ tree and the raw src/ tree (ts-node / bun). */
@@ -34,8 +44,8 @@ export function registerOpenCodeCommand(program: Command): void {
     .command("install-plugin")
     .description(
       "Install the open-agent-bridge plugin into an OpenCode project (or globally). " +
-        "The plugin opens a WebSocket to the bridge registry and delivers channel messages " +
-        "directly into the active session via session.prompt_async, enabling real-time push.",
+        "It registers the MCP server and turns each channel message into a new turn in the " +
+        "session in use; on OpenCode 2 its terminal half also opens that session from the home screen.",
     )
     .option("--project <path>", "Project path (default: cwd)", process.cwd())
     .option("--global", "Install to ~/.config/opencode/plugins/ instead of the project directory")
@@ -73,10 +83,20 @@ export function registerOpenCodeCommand(program: Command): void {
         process.exit(1);
       }
 
-      const srcPlugin = join(sourceDir, "agent-bridge.ts");
-      const destPlugin = join(pluginDir, "agent-bridge.ts");
-      copyFileSync(srcPlugin, destPlugin);
-      console.log(chalk.green("✓") + ` Copied plugin to ${destPlugin}`);
+      if (openCodeMajor() < 2) {
+        // OpenCode 1 loads single files, and has no terminal plugins.
+        copyFileSync(join(sourceDir, "agent-bridge.ts"), join(pluginDir, "agent-bridge.ts"));
+        console.log(chalk.green("✓") + ` Copied plugin to ${join(pluginDir, "agent-bridge.ts")}`);
+      } else {
+        // OpenCode 2 loads `<plugins>/<name>/index.ts` (server) and `tui.ts` (terminal) together.
+        const destDir = join(pluginDir, "open-agent-bridge");
+        mkdirSync(destDir, { recursive: true });
+        copyFileSync(join(sourceDir, "agent-bridge.ts"), join(destDir, "index.ts"));
+        copyFileSync(join(sourceDir, "tui.ts"), join(destDir, "tui.ts"));
+        // The single-file layout would load a second copy.
+        rmSync(join(pluginDir, "agent-bridge.ts"), { force: true });
+        console.log(chalk.green("✓") + ` Copied plugin to ${destDir}/ (index.ts + tui.ts)`);
+      }
 
       // 3. Copy package.json (for bun install to resolve ws dependency)
       const srcPkg = join(sourceDir, "package.json");
@@ -108,8 +128,8 @@ export function registerOpenCodeCommand(program: Command): void {
       console.log(chalk.bold("Done!") + " Restart OpenCode for the plugin to load.");
       console.log(
         chalk.dim(
-          "  Once loaded, the plugin registers as an [OpenCode bridge] in list_agents and\n" +
-            "  delivers channel messages directly into the active session (no inbox polling).",
+          "  Once loaded, OpenCode shows up as [OpenCode] in list_agents and channel messages\n" +
+            "  arrive as a new turn in the session in use (no inbox polling).",
         ),
       );
       console.log();

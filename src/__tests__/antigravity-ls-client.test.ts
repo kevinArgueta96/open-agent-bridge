@@ -1,8 +1,30 @@
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  agyConversationPath,
   parseLatestHttpPort,
   pickActiveCascadeId,
+  readAgyConversation,
+  writeAgyConversation,
 } from "../client/antigravity-ls-client.js";
+
+describe("agy conversation handoff (hook → adapter)", () => {
+  it("round-trips privately, and is ignored without a token", () => {
+    const env = { XDG_RUNTIME_DIR: mkdtempSync(join(tmpdir(), "oab-rt-")) };
+    try {
+      expect(readAgyConversation(77, env)).toBeUndefined();
+      writeAgyConversation(77, { url: "http://127.0.0.1:1", csrf: "t", cascadeId: "c1" }, env);
+      expect(readAgyConversation(77, env)?.cascadeId).toBe("c1");
+      expect(statSync(agyConversationPath(77, env)).mode & 0o777).toBe(0o600);
+      writeAgyConversation(78, { url: "http://127.0.0.1:1", cascadeId: "c2" }, env);
+      expect(readAgyConversation(78, env)).toBeUndefined();
+    } finally {
+      rmSync(env.XDG_RUNTIME_DIR, { recursive: true, force: true });
+    }
+  });
+});
 
 /**
  * The Antigravity (`agy`) Cascade Language Server listens on two random

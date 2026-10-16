@@ -29,7 +29,7 @@ export function registerInitCommand(program: Command): void {
     .command("init")
     .description("Set up open-agent-bridge for a project — writes .mcp.json, starts the registry, prints next steps")
     .option("--identity <id>", "Channel namespace (default: global)")
-    .option("--client <name>", "Client to set up (claude|codex|opencode|antigravity); repeatable or comma-separated", collectClient, [])
+    .option("--client <name>", "Client to set up (claude|codex|opencode|antigravity|pi); repeatable or comma-separated", collectClient, [])
     .option("--project <path>", "Project path (default: cwd)")
     .option("-p, --port <number>", "Registry port", String(DEFAULT_REGISTRY_PORT))
     .option("--mode <mode>", "MCP command mode: linked|local (default: auto)")
@@ -64,6 +64,7 @@ export function registerInitCommand(program: Command): void {
                   { value: "codex", label: "Codex" },
                   { value: "opencode", label: "OpenCode" },
                   { value: "antigravity", label: "Antigravity (agy)" },
+                  { value: "pi", label: "pi" },
                 ],
                 initialValues: clients.length ? clients : ["claude"],
                 required: true,
@@ -125,13 +126,19 @@ export function registerInitCommand(program: Command): void {
             else warn(`${path} already declares ${MCP_SERVER_NAME} — left as is; check its AGENT_BRIDGE_IDENTITY`);
           }
         }
-        if (client === "opencode" || client === "antigravity") {
+        if (client === "pi") {
+          // pi's extension registers the MCP server itself, so there is no config to write.
           try {
-            execFileSync(
-              process.execPath,
-              [resolveCliEntry(), client, "install-plugin", "--project", projectPath],
-              { stdio: "inherit" },
-            );
+            execFileSync(process.execPath, [resolveCliEntry(), "pi", "install-extension"], { stdio: "inherit" });
+          } catch {
+            warn("Could not install the pi extension — run `oab pi install-extension` manually");
+          }
+        }
+        if (client === "opencode" || client === "antigravity") {
+          // agy's plugin is installed into agy itself (all workspaces); OpenCode's into the project.
+          const args = client === "opencode" ? ["--project", projectPath] : [];
+          try {
+            execFileSync(process.execPath, [resolveCliEntry(), client, "install-plugin", ...args], { stdio: "inherit" });
           } catch {
             warn(`Could not auto-configure ${client} — run \`oab ${client} install-plugin --project ${projectPath}\` manually`);
           }
@@ -146,8 +153,9 @@ export function registerInitCommand(program: Command): void {
         lines.push(`Claude Code:  ${chalk.cyan("claude")}  ${chalk.dim("(Claude Code < 2.1.224: oab claude --legacy-channels)")}`);
       if (clients.includes("codex"))
         lines.push(`Codex:        ${chalk.cyan("codex")}   ${chalk.dim(`(codex < 0.162 or headless: oab codex start${idFlag})`)}`);
-      if (clients.includes("opencode")) lines.push(`OpenCode:     ${chalk.dim("plugin installed — restart OpenCode")}`);
-      if (clients.includes("antigravity")) lines.push(`Antigravity:  ${chalk.dim("MCP + hooks installed — restart agy")}`);
+      if (clients.includes("opencode")) lines.push(`OpenCode:     ${chalk.cyan("opencode")}  ${chalk.dim("(plugin installed; OpenCode ≥ 1.18.29 or 2.x)")}`);
+      if (clients.includes("antigravity")) lines.push(`Antigravity:  ${chalk.cyan("agy")}       ${chalk.dim("(plugin installed: MCP + hooks)")}`);
+      if (clients.includes("pi")) lines.push(`pi:           ${chalk.cyan("pi")}`);
       lines.push(`Status:       ${chalk.cyan("oab status")}`);
       lines.push(`Stop hub:     ${chalk.cyan("oab down")}`);
 

@@ -5,13 +5,21 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { isRegistryUp, whichBinary, DEFAULT_REGISTRY_URL } from "../lib/runtime.js";
 import { MCP_SERVER_NAME } from "../lib/mcp-config.js";
 import { claudeSupportsInboxSocket } from "../../client/claude-inbox-socket.js";
 import { codexSupportsDaemon } from "../../client/codex-daemon-socket.js";
+
+function agyPluginList(): string {
+  try {
+    return execFileSync("agy", ["plugin", "list", "--json"], { encoding: "utf8", timeout: 10_000 });
+  } catch {
+    return "";
+  }
+}
 
 function versionOf(bin: string): string | null {
   try {
@@ -82,7 +90,7 @@ export function registerDoctorCommand(program: Command): void {
 
       // Client CLIs (optional). Claude Code and Codex also report whether their
       // version gets messages as a new turn in the live session.
-      for (const bin of ["claude", "codex", "opencode", "agy"]) {
+      for (const bin of ["claude", "codex", "opencode", "agy", "pi"]) {
         const path = whichBinary(bin);
         if (!path || (bin !== "claude" && bin !== "codex")) {
           checks.push({ name: `client: ${bin}`, ok: path !== null, detail: path ?? "not in PATH (optional)", optional: true });
@@ -96,6 +104,50 @@ export function registerDoctorCommand(program: Command): void {
           name: `client: ${bin} (native push)`,
           ok: native,
           detail: native ? `${version ?? path} — messages arrive as a new turn in the live session` : `${version} — ${fallback}`,
+          optional: true,
+        });
+      }
+
+      // OpenCode, pi and agy start turns only from inside their own process, so
+      // native delivery needs their in-process half installed.
+      const inHost = [
+        {
+          bin: "opencode",
+          name: "OpenCode plugin",
+          // The single-file agent-bridge.ts layout predates the terminal half (tui.ts).
+          files: [
+            resolve(".opencode/plugins/open-agent-bridge/index.ts"),
+            join(homedir(), ".config/opencode/plugins/open-agent-bridge/index.ts"),
+            resolve(".opencode/plugins/agent-bridge.ts"),
+            join(homedir(), ".config/opencode/plugins/agent-bridge.ts"),
+          ],
+          fix: "oab opencode install-plugin",
+        },
+        {
+          bin: "pi",
+          name: "pi extension",
+          files: [resolve(".pi/extensions/open-agent-bridge.ts"), join(homedir(), ".pi/agent/extensions/open-agent-bridge.ts")],
+          fix: "oab pi install-extension",
+        },
+        {
+          bin: "agy",
+          name: "agy plugin (MCP + hooks)",
+          files: [],
+          fix: "oab antigravity install-plugin",
+          // agy keeps its plugins in its own store; ask it.
+          lookup: () => (/"name"\s*:\s*"oab"/.test(agyPluginList()) ? "installed in agy (oab)" : undefined),
+        },
+      ];
+      for (const c of inHost as Array<(typeof inHost)[number] & { lookup?: () => string | undefined }>) {
+        if (!whichBinary(c.bin)) continue;
+        const found = c.lookup ? c.lookup() : c.files.find((f) => existsSync(f));
+        // An OpenCode plugin without its terminal half cannot show delivered messages.
+        const outdated =
+          c.bin === "opencode" && found && (found.endsWith("agent-bridge.ts") || !existsSync(join(dirname(found), "tui.ts")));
+        checks.push({
+          name: `${c.name} (native push)`,
+          ok: Boolean(found) && !outdated,
+          detail: !found ? `missing — run: ${c.fix}` : outdated ? `outdated — run: ${c.fix}` : found,
           optional: true,
         });
       }

@@ -16,7 +16,7 @@ This document covers the end-to-end path of `message_client_session` (and its si
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  LLM host (Claude Code, Codex, Gemini)                               │
+│  LLM host (Claude Code, Codex, OpenCode, pi, Antigravity)            │
 └──────────────────────────────────────────────────────────────────────┘
                               │  MCP tool call
                               ▼
@@ -85,8 +85,8 @@ The LLM calls `message_client_session({ clientId, message, ... })`. The handler 
 2. Fallback by client-name prefix extracted from a stale `clientId` (handles client restarts).
 3. Lookup via `conversationId` participants if no `clientId` / `project` given.
 4. `project` substring match against `projectName` / `projectPath`.
-5. Optional filter by `clientType` (`claude-code` | `codex` | `gemini`).
-6. On multiple matches, sort by `CLIENT_PRIORITY` (`claude-code > gemini > codex`); `app-server-bridge` daemons always win because they inject the message as a turn into a running app-server.
+5. Optional filter by `clientType` (`claude-code` | `opencode` | `codex` | `antigravity`).
+6. On multiple matches, sort by `CLIENT_PRIORITY` (`claude-code > opencode > antigravity > codex`); `app-server-bridge` daemons always win because they inject the message as a turn into a running app-server.
 
 The dashboard UI (`open-agent-bridge:client-dashboard-ui`) is excluded from valid targets.
 
@@ -96,7 +96,7 @@ The dashboard UI (`open-agent-bridge:client-dashboard-ui`) is excluded from vali
 sha1(sorted([fromAgentId, toAgentId]))   // → UUID-v4-shaped string
 ```
 
-Both sides compute the same id, so a reply doesn't need handshake state — the recipient's `channel_inbox` already shows the same thread.
+Both sides compute the same id, so a reply doesn't need handshake state — the recipient's `channel_inbox` already shows the same thread. It also means a new `message_client_session` to the same peer lands in that same thread (one thread per agent pair) unless the caller passes an explicit `conversationId`.
 
 ### 3. Hand off to the service
 
@@ -140,9 +140,9 @@ The registry stores `agentWsMap[agentId] = ws`. Re-identification on the same so
 After posting, `handleMessageClientSession` waits on the **delivery state machine** via `ConversationService.waitForAcknowledgement(...)`:
 
 - **Phase 1** (≤ 3s, all clients): wait for any of `delivered_to_bridge | displayed_to_client | answered | failed`. This catches "the bridge got it".
-- **Phase 2** (only for clients without native delivery — older Codex, Antigravity — when `expectsResponse=true`): wait up to `timeoutMs` (capped at 120s) for `answered | failed`.
+- **Phase 2** (only when the *sender's* client has no native delivery — older Codex, or agy before `antigravity attach` — and `expectsResponse=true`): wait up to `timeoutMs` (capped at 120s) for `answered | failed`.
 
-Why the asymmetry: Claude Code (inbox socket), OpenCode (plugin) and Codex ≥ 0.162 (app-server daemon) receive messages as a new turn in the live session, even while idle. If we blocked the tool, the incoming reply notification couldn't be processed — so we return fast and let the inbox surface the reply asynchronously. Codex/Gemini cannot react to a `notifications/message` log line after a tool returns, so we must keep waiting and return the reply inline.
+Why the asymmetry: Claude Code (inbox socket), Codex ≥ 0.162 (app-server daemon), OpenCode and pi (host inbox socket served by their plugin / extension) and attached agy (language server `SendUserCascadeMessage`) receive messages as a new turn in the live session, even while idle. If we blocked the tool, the incoming reply couldn't be processed — so we return fast and let the reply arrive as its own turn. Clients without that path cannot react to a `notifications/message` log line after a tool returns, so we must keep waiting and return the reply inline.
 
 ## Receive path (the other side)
 
@@ -176,6 +176,9 @@ Dedup uses an in-memory `Set` with a TTL; the `ConversationSessionStore` tracks 
    - **Native delivery first** (claims the messageId before the async write, releases it on failure):
      - **Claude profile** with `$CLAUDE_CODE_MESSAGING_SOCKET` → `buildInjectionPrompt()` written to Claude Code's inbox socket; runs as the next turn. Ack `displayed_to_client` ("written to the Claude Code inbox socket" — Claude Code sends no confirmation back, so this is best effort).
      - **Codex profile** with the app-server daemon socket → `turn/start` on the session's own thread (waits for idle); ack "injected into the live Codex session". On failure the message stays pending for the next sync — no notification fallback, Codex ignores them.
+     - **Antigravity profile** with `$XDG_RUNTIME_DIR/open-agent-bridge/agy-<ppid>.json` (written by `oab antigravity attach`, refreshed by the plugin's hooks) → `SendUserCascadeMessage` on agy's language server with the CSRF token, `MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE` and the `cascadeConfig`/agent spec of the user's last message (agy refuses a turn without a plan model). Without the file (agy's agent has not run `attach` yet) the message stays pending: no ack, no notification — agy ignores them — so agy's `Stop` hook delivers it at the end of the next turn, or the registry sync does once `attach` runs.
+     - **OpenCode / pi profiles** with a host inbox socket of the parent process (`inbox-<ppid>[-<dirhash>].sock`) → the same NDJSON frame as Claude Code's socket plus the message `id`; the plugin / extension dedupes by id and starts the turn (`session.prompt` with `delivery: "queue"` / `pi.sendMessage(…, { triggerTurn: true })`). The Claude Code messaging token is never forwarded there.
+     - For Codex, attached Antigravity, OpenCode and pi a failed delivery stays pending (no ack, no notification fallback) and the registry sync retries it.
    - Otherwise maps the channel message to a JSON-RPC notification via `clientProfile.mapChannelMessage()`:
      - **Claude profile** → `notifications/claude/channel` (experimental capability `claude/channel`) — legacy fallback, only rendered when Claude Code runs with `--dangerously-load-development-channels`.
      - **Codex / Gemini profiles** → `notifications/message` (standard MCP log line; not reactive — these clients see replies in the tool result instead).
@@ -290,6 +293,7 @@ McpAgentBridge.handleMessageClientSession                       (src/mcp/adapter
                                                           McpAgentBridge.deliverChannelMessage
                                                            ├─ POST /channel/acks (delivered_to_bridge)
                                                            ├─ native: Claude inbox socket / Codex daemon turn/start
+                                                           │          agy SendUserCascadeMessage / OpenCode·pi host inbox
                                                            ├─ else profile.mapChannelMessage(...)
                                                            ├─ server.notification(...)
                                                            │   • Claude (legacy) → notifications/claude/channel

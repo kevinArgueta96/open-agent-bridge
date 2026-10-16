@@ -1,30 +1,32 @@
 # Peer Types
 
-Nine peer types are recognized by the registry. Each has different delivery behavior.
+Each registry entry is classified with a `peerType` (`src/mcp/adapter.ts::getPeerType`). Every client gets incoming messages as a new turn in its live session; what differs is the in-host piece that starts the turn.
 
 ## Taxonomy
 
-| Peer type | agentId prefix | Delivery mode | Requires daemon |
+| Peer type | Label | How a message starts a turn | Needs |
 |---|---|---|---|
-| `claude-code` | `client-claude-code-*` | Push via MCP notification | No |
-| `opencode-code` | `client-opencode-*` | Push via `session.prompt_async` | Plugin required |
-| `opencode-bridge` | `client-opencode-bridge-*` | Push via `session.prompt_async` | Plugin (runs inside OpenCode) |
-| `codex-bridge` | `client-codex-bridge-*` | Inject via `turn/start` JSON-RPC | Yes — `codex app-bridge` |
-| `codex-inner` | `client-codex-mcp-client-*` | Pull — must call `channel_inbox` | No (passive) |
-| `gemini-bridge` | `client-codex-bridge-*` (acp) | Inject via `session/prompt` JSON-RPC | Yes — `gemini app-bridge` |
-| `gemini-inner` | `client-gemini-mcp-client-*` | Pull — must call `channel_inbox` | No (passive) |
-| `dashboard-ui` | `client-dashboard-ui-*` | WS event in chat panel | No |
-| `unknown` | any unrecognized | Passive | Depends |
+| `claude-code` | `[Claude Code]` | Claude Code's inbox socket (`$CLAUDE_CODE_MESSAGING_SOCKET`) | Claude Code ≥ 2.1.224 (older: `oab claude --legacy-channels`) |
+| `codex-inner` | `[Codex inner]` | Codex app-server daemon, into the live TUI | codex ≥ 0.162 |
+| `codex-bridge` | `[Codex bridge]` | `turn/start` into the bridge's own thread | `oab codex start` (headless / older Codex) |
+| `opencode-code` | `[OpenCode]` | OpenCode plugin: host inbox socket → `session.prompt` (`delivery: "queue"`) | `oab opencode install-plugin` |
+| `pi-code` | `[pi]` | pi extension: host inbox socket → `sendMessage` (follow-up turn) | `oab pi install-extension` |
+| `antigravity-inner` | `[Antigravity inner]` | agy's language server, `SendUserCascadeMessage` (`WHEN_IDLE`) | `oab antigravity install-plugin` + a one-time `attach` |
+| `opencode-bridge` | `[OpenCode bridge]` | Legacy: the old OpenCode 1 plugin registered itself as a bridge | — |
+| `dashboard-ui` | `[Dashboard UI]` | WS event in the chat panel | — |
+| `unknown` | raw `clientName` | Channel notification only | — |
 
 ## Notes
 
-**Claude Code** receives messages as `<channel>` blocks in the terminal via `notifications/claude/channel`. Up to 100 messages are buffered before the `initialize` handshake.
+**Claude Code** gets the message as a `user` frame on its inbox socket, so an idle session starts a turn. If the socket is unavailable it falls back to the `<channel>` notification.
 
-**OpenCode** has two registrations per session: the MCP client (`opencode-code`) and the plugin bridge (`opencode-bridge`). The adapter routes to the plugin bridge automatically when it is present. The MCP client can still call `channel_inbox` and `reply`.
+**Codex** (≥ 0.162) runs its TUI on a shared app-server daemon; the adapter starts a turn on the daemon's thread for this project. Only `oab codex start` adds a second entry (`codex-bridge`); sending to either agentId then routes to the bridge.
 
-**Codex** always has two registrations: the bridge daemon (`codex-bridge`) and an inner MCP client (`codex-inner`). Sending to either agentId routes to the bridge. A plain `codex` session (no `--remote`) only registers the inner MCP client — it cannot receive automatic turn injection.
+**OpenCode** registers one entry. Its plugin (`<plugins>/open-agent-bridge/index.ts`) queues each message in the session in use; with the terminal on its home screen it uses an `open-agent-bridge` session, and the terminal half (`tui.ts`, OpenCode 2) opens it.
 
-**Gemini** follows the same pattern as Codex: ACP bridge daemon + inner MCP client. Auto-approve of `session/request_permission` is done by the bridge.
+**pi** registers one entry. Its extension starts the turn as a follow-up, so a running turn is not interrupted.
+
+**Antigravity (`agy`)** registers one entry. The plugin's SessionStart hook asks agy's agent to run `open-agent-bridge antigravity attach` once, because only commands agy's agent runs receive the language-server token. Until then the Stop hook delivers pending messages at the end of each turn.
 
 **Dashboard** is a passive listener. Never set it as the target of a `message_client_session` call.
 
@@ -33,10 +35,11 @@ Nine peer types are recognized by the registry. Each has different delivery beha
 `list_agents(includeClients: true)` returns rows like:
 
 ```
-[OpenCode]        my-project  [a1b2c3d4]
-[OpenCode bridge] my-project  [e5f6a7b8]
-[Codex inner]     other-proj  [c9d0e1f2]
-[Claude Code]     another     [f3a4b5c6]
+[Claude Code]        another     [f3a4b5c6]
+[Codex inner]        other-proj  [c9d0e1f2]
+[OpenCode]           my-project  [a1b2c3d4]
+[pi]                 my-project  [8530439a]
+[Antigravity inner]  my-project  [1f1766de]
 ```
 
 The bracket label is the human-readable peer type. The 8-char suffix is the last 8 chars of the agentId for disambiguation when multiple same-type sessions are visible.

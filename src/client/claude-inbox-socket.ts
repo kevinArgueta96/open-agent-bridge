@@ -27,6 +27,8 @@ export interface ClaudeInboxSocketOptions {
   socketPath?: string;
   token?: string;
   timeoutMs?: number;
+  /** Channel message id, sent only to host inbox sockets so duplicate writes dedupe. */
+  id?: string;
 }
 
 /**
@@ -52,13 +54,18 @@ export function claudeInboxSocketAvailable(env: NodeJS.ProcessEnv = process.env)
  * Resolves `true` when both frames were written and the connection closed
  * cleanly; `false` on any failure (missing socket, connect error, timeout) so
  * the caller can fall back to MCP-notification delivery. Never throws.
+ *
+ * The same NDJSON frames feed the host inbox sockets of OpenCode, pi and
+ * Antigravity (host-inbox-socket.ts). With an explicit `socketPath` the token
+ * comes only from `options`: an inherited Claude Code token must never be
+ * written to another agent's socket.
  */
 export function deliverViaClaudeInboxSocket(
   content: string,
   options: ClaudeInboxSocketOptions = {},
 ): Promise<boolean> {
   const socketPath = options.socketPath ?? process.env.CLAUDE_CODE_MESSAGING_SOCKET;
-  const token = options.token ?? process.env.CLAUDE_CODE_MESSAGING_TOKEN;
+  const token = options.socketPath ? options.token : (options.token ?? process.env.CLAUDE_CODE_MESSAGING_TOKEN);
   if (!socketPath) return Promise.resolve(false);
 
   return new Promise((resolve) => {
@@ -77,7 +84,7 @@ export function deliverViaClaudeInboxSocket(
     const socket = createConnection(socketPath, () => {
       const frames =
         (token ? `${JSON.stringify({ type: "auth", token })}\n` : "") +
-        `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
+        `${JSON.stringify({ type: "user", ...(options.id ? { id: options.id } : {}), message: { role: "user", content } })}\n`;
       socket.end(frames, () => done(true));
     });
     socket.on("error", () => done(false));

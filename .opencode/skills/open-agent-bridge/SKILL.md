@@ -1,15 +1,15 @@
 ---
 name: open-agent-bridge
-description: Use when sending or replying to channel messages between agents (Claude Code, OpenCode, Codex, Gemini). Activate when: list_agents, message_client_session, channel_inbox, or reply MCP tools are needed; when a <channel> push arrives; when deliveryState shows delivered_to_bridge stuck; when routing to Codex/Gemini inner vs bridge peers; when authoring code that uses the agent-bridge MCP tools or ChannelMessage protocol; when setting up the registry, MCP config, or bridge daemons.
+description: "Use when sending or replying to channel messages between agents (Claude Code, OpenCode, Codex, pi, Antigravity). Activate when: list_agents, message_client_session, channel_inbox, or reply MCP tools are needed; when an open-agent-bridge channel message arrives as a new turn; when deliveryState shows delivered_to_bridge stuck; when routing to inner clients vs bridge peers; when authoring code that uses the agent-bridge MCP tools or ChannelMessage protocol; when setting up the registry, MCP config, or bridge daemons."
 ---
 
 # open-agent-bridge
 
-Local communication hub for AI agents. Claude Code, OpenCode, Codex, and Gemini CLI exchange messages through a central registry over MCP tools and WebSocket channels.
+Local communication hub for AI agents. Claude Code, Codex, OpenCode, pi, and Antigravity (`agy`) exchange messages through a central registry over MCP tools and WebSocket channels. An incoming message starts a new turn in the receiver's live session; the receiver answers with `reply`.
 
 ## When to use
 
-- You received a `<channel>` push and need to reply
+- An `[open-agent-bridge] Channel message` arrived as a new turn and you need to reply
 - You want to send a task or message to another agent
 - `list_agents` / `message_client_session` / `channel_inbox` / `reply` are needed
 - Delivery is stuck at `delivered_to_bridge` and you need to diagnose why
@@ -21,7 +21,7 @@ Local communication hub for AI agents. Claude Code, OpenCode, Codex, and Gemini 
 |---|---|
 | `agent_bridge_guide` | Read the protocol guide (topics: overview, setup, send, reply, acks, troubleshooting) |
 | `list_agents` | Discover connected agents and client sessions |
-| `message_client_session` | Send a message to a peer; starts or continues a thread |
+| `message_client_session` | Send a message to a peer; each pair of agents shares one thread |
 | `channel_inbox` | Inspect pending conversations awaiting reply |
 | `reply` | Respond to a pending message; closes the thread |
 
@@ -38,7 +38,7 @@ Local communication hub for AI agents. Claude Code, OpenCode, Codex, and Gemini 
    )
    → returns conversationId, messageId, deliveryState
 
-3. Wait for reply via <channel> push or poll channel_inbox
+3. The reply arrives in your session as a new turn (or check channel_inbox)
 ```
 
 ## Reply workflow
@@ -64,28 +64,28 @@ The adapter resolves the best target automatically:
 1. `clientId` provided → direct lookup, no resolution
 2. Only `conversationId` provided → resolved from conversation history
 3. `project` provided → filter by project path/name
-4. Multiple matches → bridge daemons win (priority -1), then: claude-code > opencode > gemini > codex
+4. Multiple matches → bridge daemons win (priority -1), then: claude-code > opencode > antigravity > codex > others (pi)
 
-Codex inner MCP clients (`client-codex-mcp-client-*`) and Gemini inner clients are auto-redirected to their bridge daemon. Never substitute `replyWith.agentId` manually — the adapter handles re-routing.
+Codex inner MCP clients (`client-codex-mcp-client-*`) are auto-redirected to their bridge daemon when an `oab codex start` bridge exists. Never substitute `replyWith.agentId` manually — the adapter handles re-routing.
 
 ## ACK states
 
 ```
 queued
-  → delivered_to_bridge   (bridge received the message)
-    → displayed_to_client (client session received it)
+  → delivered_to_bridge   (the recipient's adapter received the message)
+    → displayed_to_client (it started a turn in the recipient's live session)
       → answered          (reply was sent)
       → failed            (delivery or reply failed)
 ```
 
-If `delivered_to_bridge` does not advance: the bridge is running but the client session is not attached. See `references/troubleshooting.md`.
+If `delivered_to_bridge` does not advance: the recipient's in-host piece (OpenCode plugin, pi extension, agy plugin + `attach`) is missing or the session is busy. Run `open-agent-bridge doctor` and see `references/troubleshooting.md`.
 
 ## Anti-patterns
 
 - Do not open a new thread to reply to a pending message — use `reply`
 - Do not substitute `replyWith.agentId` with another ID — adapter handles routing
 - Do not set `requiresAck: true` on fire-and-forget messages
-- Do not call `message_client_session` to reply — that starts a new thread
+- Do not call `message_client_session` to reply — it sends a separate message instead of answering this one
 
 ## References
 

@@ -9,14 +9,15 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "plugins"
   ],
   "license": "MIT",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc && cp src/client/opencode-plugin/agent-bridge.ts dist/client/opencode-plugin/agent-bridge.ts && cp src/client/opencode-plugin/package.json dist/client/opencode-plugin/package.json",
+    "build": "tsc && cp src/client/opencode-plugin/agent-bridge.ts src/client/opencode-plugin/tui.ts dist/client/opencode-plugin/ && cp src/client/opencode-plugin/package.json dist/client/opencode-plugin/package.json && mkdir -p dist/client/pi-extension && cp src/client/pi-extension/agent-bridge.ts dist/client/pi-extension/agent-bridge.ts",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "clean": "rm -rf dist",

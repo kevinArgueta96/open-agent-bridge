@@ -1,0 +1,18 @@
+{
+  "open-agent-bridge": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "open-agent-bridge antigravity hook-session-start",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "open-agent-bridge antigravity hook-stop",
+        "timeout": 10
+      }
+    ]
+  }
+}

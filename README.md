@@ -7,9 +7,9 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript" />
 </div>
 
-**Let Claude Code, OpenCode, Codex, and Antigravity (`agy`) talk to each other — over MCP, locally, bidirectionally.**
+**Let Claude Code, Codex, OpenCode, pi, and Antigravity (`agy`) talk to each other — over MCP, locally, bidirectionally.**
 
-`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, OpenCode, Codex, and Google Antigravity CLI (`agy`) running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
+`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, Codex, OpenCode, pi, and Google Antigravity CLI (`agy`) running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine. A message from one agent starts a new turn in the other's live session, and the answer comes back the same way.
 
 Sessions can be **scoped by `--identity`**: every launcher accepts an identity namespace, and agents only see channel messages from peers sharing the same namespace (default `global`). This gives each ticket/agent its own private inbox.
 
@@ -24,14 +24,14 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
 - [How it works](#how-it-works)
 - [Getting started](#getting-started)
   - [Requirements](#requirements)
-  - [Install](#install)
-  - [1. Start the registry](#1-start-the-registry)
-  - [2. Start an agent](#2-start-an-agent)
-  - [3. Configure MCP](#3-configure-mcp)
+  - [Install — Path A: from scratch](#install--path-a-from-scratch-nothing-cloned-yet)
+  - [Install — Path B: you already cloned the repo](#install--path-b-you-already-cloned-the-repo)
+  - [What oab init does](#what-oab-init-does)
 - [Launching each client](#launching-each-client)
   - [Claude Code](#claude-code)
   - [OpenCode](#opencode)
   - [Codex](#codex)
+  - [pi](#pi)
   - [Antigravity (agy)](#antigravity-agy)
   - [Identity scoping (--identity)](#identity-scoping---identity)
   - [Dashboard](#dashboard-1)
@@ -48,10 +48,10 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
   - [End-to-end example](#end-to-end-example)
 - [Client bridges](#client-bridges)
   - [Claude Code bridge (native inbox socket)](#claude-code-bridge-native-inbox-socket)
-  - [OpenCode bridge (plugin push)](#opencode-bridge-plugin-push)
+  - [OpenCode and pi (host inbox socket)](#opencode-and-pi-host-inbox-socket)
   - [Codex native delivery (app-server daemon)](#codex-native-delivery-app-server-daemon)
   - [Codex bridge (app-server)](#codex-bridge-app-server)
-  - [Antigravity bridge (Cascade Language Server push)](#antigravity-bridge-cascade-language-server-push)
+  - [Antigravity (attach + plugin hooks)](#antigravity-attach--plugin-hooks)
   - [Delivery mode comparison](#delivery-mode-comparison)
 - [Dashboard](#dashboard)
 - [Skills](#skills)
@@ -84,7 +84,10 @@ oab init                      # interactive wizard (identity + clients)
 # 3. Open your agents as usual — incoming messages arrive as a new turn in each live session
 claude                        # Claude Code ≥ 2.1.224
 codex                         # codex ≥ 0.162
-oab doctor                    # optional: confirms both get native delivery
+opencode                      # OpenCode 2.x — after `oab init` installs its plugin
+pi                            # pi ≥ 1.3   — after `oab init` installs its extension
+agy                           # agy ≥ 1.3  — after `oab init` installs its plugin
+oab doctor                    # optional: confirms every client gets native delivery
 ```
 
 ### Setup at a glance
@@ -93,15 +96,21 @@ oab doctor                    # optional: confirms both get native delivery
 | :--- | :--- | :--- | :--- |
 | **Claude Code** ≥ 2.1.224 | `oab init` (writes `.mcp.json`) or the plugin | `claude` | New turn in the live session (Claude Code's inbox socket) |
 | **Codex** ≥ 0.162 | `oab init --client codex` or the plugin | `codex` | New turn in the live TUI (Codex's app-server daemon) |
-| **OpenCode** | `oab init --client opencode` (installs the plugin) | `opencode` | New prompt in the active session (plugin) |
-| **Antigravity** (`agy`) | `oab init --client antigravity`, then `oab antigravity ls-push` | `agy` | New user turn via its language server |
+| **OpenCode** 2.x | `oab init --client opencode` (installs the plugin) | `opencode` | New prompt queued in the session you work in; on the home screen the terminal opens the session it went to |
+| **pi** ≥ 1.3 | `oab init --client pi` (installs the extension) | `pi` | New turn in the live session (follow-up) |
+| **Antigravity** (`agy`) ≥ 1.3 | `oab init --client antigravity` (installs the plugin) | `agy` | New turn in the live conversation, once agy's agent ran `attach` (automatic, first turn of each session) |
 
-No flags, no extra daemons for Claude Code and Codex: the MCP adapter each session already starts does the delivery. Two fallbacks remain for older releases or special cases:
+In every case the receiving agent answers with the `reply` tool and can start its own threads with `message_client_session` — verified live in both directions for all five clients. No extra daemons and no flags in daily use.
+
+**Why the setups differ.** Claude Code and Codex expose a door any child process can use — Claude Code exports `$CLAUDE_CODE_MESSAGING_SOCKET`, Codex ≥ 0.162 runs its TUI on an app-server daemon with a local socket — so registering the MCP server is enough: the adapter each session already starts does the delivery. OpenCode and pi can only start a turn from inside their own process, so they need a plugin / extension; it registers the MCP server too, so it is still a single install. agy's language server can start a turn, but only for callers holding a CSRF token that agy gives to the commands its own agent runs — not to MCP servers or hooks — so its plugin asks the agent to run `open-agent-bridge antigravity attach` once per session.
+
+Fallbacks for older releases or special cases:
 
 - Claude Code < 2.1.224 → `oab claude --legacy-channels` (`<channel>` push via the dev-channels flag).
 - Codex < 0.162, or Codex with no TUI open (headless) → `oab codex start` (a bridge that owns its own Codex thread).
+- agy without `attach` (permission denied, older session) → the plugin's Stop hook delivers pending messages at the end of the next turn.
 
-Pick a private namespace with `oab init --identity <name>`; it is written into each client's project config (`.mcp.json`, `.codex/config.toml`), so the plain `claude` / `codex` commands pick it up. Codex only reads a project's `.codex/config.toml` when the project is trusted.
+Pick a private namespace with `oab init --identity <name>`; it is written into each client's project config (`.mcp.json`, `.codex/config.toml`), so the plain `claude` / `codex` commands pick it up. Codex only reads a project's `.codex/config.toml` when the project is trusted. The OpenCode plugin and the pi extension pass on `AGENT_BRIDGE_IDENTITY` from the environment you start them in; identity scoping for agy is not verified yet.
 
 ### Or install it as a plugin
 
@@ -135,6 +144,11 @@ runtime does read a plugin's `hooks.json` — it just caps SessionEnd hooks at
 three seconds. Commands remain Claude Code only, so anything Codex must also
 understand belongs in the skill rather than in a command.
 
+agy installs the same plugin directory (`plugins/open-agent-bridge`, plugin name
+`oab`) with `oab antigravity install-plugin`, which runs `agy plugin install`.
+For agy it carries `plugin.json`, `mcp_config.json` and a root `hooks.json`
+(SessionStart + Stop); agy turns the commands into skills.
+
 That's it — no dedicated terminal for the registry, no manual `.mcp.json` editing. Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
 
 Prefer explicit commands? The wizard is optional:
@@ -149,32 +163,36 @@ oab doctor                                # diagnose your environment
 oab down                                  # stop the background registry
 ```
 
-For OpenCode, install the push plugin (the wizard does this for you when you select it):
+For OpenCode, pi and agy, install their in-process half (the wizard does this for you when you select them):
 
 ```bash
-oab opencode install-plugin --project .
+oab opencode install-plugin --project .   # or --global
+oab pi install-extension                  # or --project <path>
+oab antigravity install-plugin            # agy plugin "oab", all workspaces
 ```
+
+Restart each agent after installing. `oab doctor` then checks, per installed client: the Claude Code and Codex versions that deliver natively, the OpenCode plugin (flagging the old single-file layout), the pi extension, the agy plugin (via `agy plugin list --json`), and Codex's MCP registration — and fails if `AGENT_BRIDGE_PROJECT` is pinned in the global Codex config.
 
 ---
 
 ## Why open-agent-bridge?
 
 - **Local-first, zero infrastructure.** Everything runs on `localhost`. No cloud relay, no auth tokens, no subscriptions. The registry binds to `:4999`; agents bind to `:5001+`.
-- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code, OpenCode, Codex, Antigravity, and other MCP clients can use the same bridge tools.
+- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code, Codex, OpenCode, pi, Antigravity, and other MCP clients can use the same bridge tools.
 - **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
 - **Per-identity inboxes.** Every launcher accepts `--identity <ns>`. Sessions only see channel messages from peers in the same namespace — a hard wall, even for directed messages. `list_agents` is filtered to the namespace too. Default namespace is `global`.
 - **Bounded inbox, no saturation.** `channel_inbox` is capped (`limit=25`, previews only by default) so a flood of pending messages never buries new ones, and `channel_clear` plus an automatic terminal sweep keep each inbox light.
 - **Claude Code native push, no dev flag.** The MCP adapter writes incoming messages into Claude Code's own cross-session inbox socket (CC ≥ 2.1.224), so they run as the session's next turn — even when it is idle — without `--dangerously-load-development-channels`.
-- **OpenCode plugin bridge.** The `opencode install-plugin` command installs a local OpenCode plugin that registers an OpenCode bridge client, opens a registry WebSocket, and injects incoming channel messages into the active OpenCode session with `session.prompt_async`.
 - **Codex native push, too.** On codex-cli ≥ 0.162 the MCP adapter starts incoming messages as a new turn in the user's live Codex TUI through Codex's own app-server daemon. For headless use, `oab codex start` runs a bridge that owns its own Codex thread (`--effort ultra` lets it delegate tasks to sub-agents).
-- **Antigravity native push.** `AntigravityLsBridgeService` (`antigravity ls-push`) delivers channel messages straight into a live `agy` TUI through its Cascade Language Server (`SendUserCascadeMessage`) — native push, no tmux, no manual "check inbox".
+- **OpenCode and pi through their own plugin APIs.** A small plugin (OpenCode) or extension (pi) registers the MCP server and listens on a private Unix socket; the adapter — the agent's child — writes each message there and the plugin starts the turn. OpenCode's terminal half opens the session a message lands in when you are on the home screen.
+- **Antigravity native push.** The plugin's hooks and a one-time `attach` (run by agy's own agent) let the adapter start turns in the live `agy` conversation through its language server (`SendUserCascadeMessage`) — no tmux, no manual "check inbox".
 
 ---
 
 ## How it works
 
 ```
-Claude Code / OpenCode / Codex / Antigravity (agy) / Dashboard
+Claude Code / Codex / OpenCode / pi / Antigravity (agy) / Dashboard
               |
               v
     ┌─────────────────────────────────────┐
@@ -192,32 +210,24 @@ Claude Code / OpenCode / Codex / Antigravity (agy) / Dashboard
   │  Skills        │  │  channel_clear            │
   │  AG-UI SSE     │  │  message_client_session   │
   │                │  │  reply                    │
-  │                │  │  Claude push: inbox socket│
+  │                │  │  + last-mile delivery ↓   │
   └────────────────┘  └──────────────────────────┘
 
+  Last-mile delivery, done by the adapter each agent session starts:
+    Claude Code  → $CLAUDE_CODE_MESSAGING_SOCKET (Claude Code's inbox socket)
+    Codex        → app-server daemon socket, turn/start on the live thread
+    OpenCode, pi → host inbox socket served by their plugin / extension
+    agy          → SendUserCascadeMessage on agy's language server (after attach)
+
   ┌──────────────────────────────────────────────┐
-  │  CodexAppServerBridge  (separate daemon)      │
+  │  CodexAppServerBridge  (optional daemon)      │
+  │  `oab codex start` — headless / codex < 0.162 │
   │  Spawns: codex app-server (:4500)             │
-  │  Connects: WS to registry + WS to app-server  │
   │  Owns a thread, injects via turn/start        │
-  └──────────────────────────────────────────────┘
-
-  ┌──────────────────────────────────────────────┐
-  │  OpenCode plugin bridge                       │
-  │  Auto-loads from .opencode/plugins/           │
-  │  Connects: WS to registry                     │
-  │  Injects via session.prompt_async             │
-  └──────────────────────────────────────────────┘
-
-  ┌──────────────────────────────────────────────┐
-  │  AntigravityLsBridgeService (ls-push daemon)  │
-  │  Discovers agy's Cascade Language Server port │
-  │  Connects: WS to registry                     │
-  │  Injects via SendUserCascadeMessage (live TUI)│
   └──────────────────────────────────────────────┘
 ```
 
-Runtime components — `AgentServer`, `McpAgentBridge`, `CodexAppServerBridge`, `AntigravityLsBridgeService`, and the OpenCode plugin bridge — connect independently to the registry. None depends on the others being present.
+Runtime components — `AgentServer`, `McpAgentBridge` and the optional `CodexAppServerBridge` — connect independently to the registry. None depends on the others being present.
 
 **Message flow — Claude Code delegates a task to Codex:**
 
@@ -226,13 +236,12 @@ Runtime components — `AgentServer`, `McpAgentBridge`, `CodexAppServerBridge`, 
 Claude Code
   calls message_client_session MCP tool
   McpAgentBridge posts ChannelMessage to RegistryServer /channel/messages
-  RegistryServer broadcasts via WS to all subscribers
-  CodexAppServerBridge receives channel.message event
-  CodexAppServerBridge calls turn/start on its own thread (queued if a turn is running)
-  Codex processes the turn and the bridge relays its final message (preambles are skipped)
+  RegistryServer delivers it via WS to the Codex session's MCP adapter
+  The adapter calls turn/start on the user's live thread through the app-server daemon
+    (it waits for the thread to go idle if a turn is running)
+  Codex processes the turn and answers with the reply tool
   The reply ChannelMessage goes back through the registry
-  McpAgentBridge receives channel.message with the reply
-  McpAgentBridge writes it into Claude Code's inbox socket → it runs as Claude's next turn
+  Claude Code's MCP adapter writes it into Claude Code's inbox socket → it runs as Claude's next turn
   The reply is also listed in channel_inbox
 ```
 
@@ -244,7 +253,7 @@ Claude Code
 
 - Node.js `>=22`
 - pnpm `>=9` and `git` (to build and install)
-- (Optional) `claude`, `codex`, `opencode`, or `agy` in `$PATH` for the clients you want to bridge
+- (Optional) `claude` (≥ 2.1.224), `codex` (≥ 0.162), `opencode` (2.x), `pi` (`@earendil-works/pi-coding-agent` ≥ 1.3), or `agy` (≥ 1.3) in `$PATH` for the clients you want to bridge
 
 ### Install — Path A: from scratch (nothing cloned yet)
 
@@ -268,7 +277,7 @@ oab doctor
 # 5. Use it in any project
 cd /path/to/your/project
 oab init                 # wizard: identity + clients → writes .mcp.json + starts the registry
-claude                   # or codex — messages arrive as a new turn in the live session
+claude                   # or codex / opencode / pi / agy — messages arrive as a new turn in the live session
 ```
 
 ### Install — Path B: you already cloned the repo
@@ -292,7 +301,7 @@ oab doctor               # validate environment + PATH
 
 ### What `oab init` does
 
-In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), registers the MCP server with **Codex** via `codex mcp add`, and prints the next step per client (plain `claude` / `codex`).
+In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), installs the in-process half of the plugin-based clients (`opencode install-plugin --project`, `pi install-extension`, `antigravity install-plugin`), registers the MCP server with **Codex** via `codex mcp add`, and prints the next step per client (plain `claude` / `codex` / `opencode` / `pi` / `agy`).
 
 Codex ignores `.mcp.json` and loads servers from `~/.codex/config.toml`, which is **global**. So `init` writes only the command there, with no project and no identity: Codex starts the adapter in each session's directory, which already identifies the project. A non-`global` identity goes into the project's own `.codex/config.toml` instead. Configs written by older versions pinned `AGENT_BRIDGE_PROJECT` globally, which made every Codex session register as one project; `oab doctor` flags it, and re-running `oab init --client codex` rewrites it.
 
@@ -339,28 +348,22 @@ The MCP adapter registers the Claude Code session automatically on the first `in
 
 ### OpenCode
 
-OpenCode needs two pieces:
-
-1. An MCP server entry so the OpenCode model can call `list_agents`, `message_client_session`, `channel_inbox`, and `reply`.
-2. The local OpenCode plugin so incoming channel messages can be pushed into the active OpenCode session automatically.
-
-Install the plugin into a project:
+One install, then plain `opencode`. The plugin registers the MCP server itself (no `opencode.json` edit) and turns incoming messages into prompts:
 
 ```bash
 open-agent-bridge opencode install-plugin --project "/absolute/path/to/your/project"
-```
-
-Or install it globally:
-
-```bash
+# or for every project:
 open-agent-bridge opencode install-plugin --global
 ```
 
-The command copies `agent-bridge.ts` into `.opencode/plugins/` (or `~/.config/opencode/plugins/`) and merges the plugin dependencies into the matching `.opencode/package.json` / global package file. Local plugins are auto-loaded by OpenCode, so no `opencode.json` plugin entry is required. Restart OpenCode after installing.
+On OpenCode 2.x this writes a plugin directory that OpenCode loads automatically — `.opencode/plugins/open-agent-bridge/` (or `~/.config/opencode/plugins/open-agent-bridge/`) with two files:
 
-The plugin registers as an OpenCode bridge client (`clientVersion: "opencode-plugin-bridge"`), opens a WebSocket to the registry, sends heartbeats, and injects matching `channel.message` events into the active session through `ctx.client.session.prompt_async`. It also re-syncs missed pending messages periodically, deduplicates message IDs, and sends `delivered_to_bridge` / `displayed_to_client` ACKs back to the registry.
+- `index.ts` — the server half. Registers the `open-agent-bridge` MCP server, listens on a host inbox socket, and queues each message as a prompt (`delivery: "queue"`, so it never steers a running turn) in the session you are working in — or, when the terminal is on its home screen, in a session of its own named `open-agent-bridge`.
+- `tui.ts` — the terminal half. When a message lands while you are on the home screen it opens that session; when you are in a different session it shows a toast instead of pulling you away.
 
-When OpenCode is connected through MCP, `list_agents(includeClients=true)` shows rows like `[OpenCode]` and `[OpenCode bridge]`. Routing is automatic: sending to the OpenCode MCP client is redirected to the sibling plugin bridge when present, while the MCP client can still use `channel_inbox` and `reply`.
+On OpenCode 2 the installer also removes a single-file `agent-bridge.ts` left by an earlier install, which would otherwise load twice. On OpenCode 1.x it writes that single file instead (OpenCode 1 loads single files and has no terminal plugins). Restart OpenCode after installing — the terminal half loads with the terminal; the server half also reloads on its own, because OpenCode's background server (`opencode serve --service`) outlives the TUI and picks up plugin file changes. `oab doctor` flags the old single-file layout as outdated.
+
+OpenCode shows up in `list_agents(includeClients=true)` as one `[OpenCode]` row; it answers with `reply` and can start threads with `message_client_session`. See [OpenCode and pi](#opencode-and-pi-host-inbox-socket) for how the delivery works.
 
 ### Codex
 
@@ -408,32 +411,38 @@ yourself. On codex ≥ 0.162 you rarely need it: plain `codex` already receives
 messages in its live TUI. On an app-server too old to know `thread/start`, the
 bridge falls back to following the TUI's thread as before.
 
+### pi
+
+One install, then plain `pi` (`@earendil-works/pi-coding-agent` ≥ 1.3):
+
+```bash
+open-agent-bridge pi install-extension                  # ~/.pi/agent/extensions/open-agent-bridge.ts
+open-agent-bridge pi install-extension --project <path> # <path>/.pi/extensions/ (pi asks you to trust the project)
+```
+
+The extension registers the `open-agent-bridge` MCP server with pi, listens on a host inbox socket for the session, and starts each incoming message as a turn with `pi.sendMessage(…, { triggerTurn: true, deliverAs: "followUp" })` — after the running turn if pi is busy. Restart pi after installing. pi needs a model configured (`/login`) to answer. It shows up in `list_agents` as `[pi]`.
+
 ### Antigravity (agy)
 
-Google's Antigravity CLI (`agy`) connects through native MCP plus a **Cascade Language Server push** daemon. There is no ACP and no tmux scraping — `agy` loads the bridge as an MCP server, and `ls-push` injects channel messages straight into the live TUI.
-
-**1. Install the MCP config into the workspace:**
+Google's Antigravity CLI (`agy` ≥ 1.3) installs the shared plugin once; after that, plain `agy`:
 
 ```bash
-open-agent-bridge antigravity install-plugin --project "/absolute/path/to/your/project"
-# add --identity ticket-123 for a private namespace
-# add --global to install into ~/.gemini/antigravity-cli instead of the workspace .agents/
+open-agent-bridge antigravity install-plugin
 ```
 
-This writes `.agents/mcp_config.json` pointing `agy` at `open-agent-bridge mcp start`. Restart `agy` in the workspace so it loads the server. (No `hooks.json` is written — `agy`'s hook schema differs and the Stop-hook path is superseded by `ls-push`.)
+This runs `agy plugin install` on the repo's `plugins/open-agent-bridge` directory (plugin `oab`, for every workspace): the MCP server, the `agent-bridge` skill, the commands (as skills), and `hooks.json` with a SessionStart and a Stop hook. It also removes an `open-agent-bridge` sidecar left by earlier versions. Restart `agy` after installing.
 
-**2. Start the native push daemon** so messages arrive in the live TUI automatically:
+What happens in a session:
 
-```bash
-open-agent-bridge antigravity ls-push --project "/absolute/path/to/your/project"
-# match the identity used at install: --identity ticket-123
-```
+1. On the first turn the SessionStart hook asks agy's agent to run `open-agent-bridge antigravity attach` once. agy may ask permission the first time — choose "always allow". `attach` records agy's language-server address, its CSRF token and the conversation in `$XDG_RUNTIME_DIR/open-agent-bridge/agy-<pid>.json` (0600, in a 0700 directory).
+2. From then on every message starts a turn in the live conversation (`SendUserCascadeMessage`, `WHEN_IDLE`: at once if agy is idle, after the running turn otherwise), with the model and agent you picked. Every hook refreshes the conversation, so it follows `/new` and resumed conversations.
+3. Without `attach` nothing is lost: the message stays pending and the Stop hook delivers it at the end of the next turn.
 
-`ls-push` discovers `agy`'s Cascade Language Server port (from `~/.gemini/antigravity-cli/log/cli-*.log`, with an `ss` fallback), resolves the active `cascadeId`, and on each pending channel message calls `SendUserCascadeMessage` so `agy` processes it as a real user turn — no manual "check inbox".
+`agy` gives its language-server token only to the commands its own agent runs — not to MCP servers or hooks — which is why the `attach` step exists. The `agy` CLI does not run sidecars (that is the Antigravity app), so there is no sidecar to install.
 
-> **Requires an open conversation.** `agy` must be running with an active trajectory in the workspace for the language server to accept an injected turn. Occasionally `agy`'s model executor errors mid-turn (an `agy`-internal limitation) and the user nudges it with a plain `ok`.
-
-There are also `antigravity hook-stop` / `antigravity hook-session-start` subcommands available for hook-driven setups, but `ls-push` is the recommended delivery path.
+> **Remove old workspace configs.** An `.agents/mcp_config.json` written by earlier versions starts a second adapter next to the plugin's (which registers the server for every workspace); delete it.
+>
+> **`ls-push` is deprecated.** It calls the language server without the CSRF token that agy ≥ 1.3 requires, so it no longer delivers.
 
 ### Identity scoping (`--identity`)
 
@@ -443,9 +452,8 @@ By default every session lives in the `global` namespace and sees all `global` c
 # MCP launcher (Claude Code, generic clients) — also honours AGENT_BRIDGE_IDENTITY env var
 open-agent-bridge mcp start --project /path --identity ticket-123
 
-# Antigravity (install + push must share the identity)
-open-agent-bridge antigravity install-plugin --project /path --identity ticket-123
-open-agent-bridge antigravity ls-push        --project /path --identity ticket-123
+# OpenCode / pi — their plugin passes on AGENT_BRIDGE_IDENTITY from the launch environment
+AGENT_BRIDGE_IDENTITY=ticket-123 opencode
 
 # Codex — writes the identity into /path/.codex/config.toml; then run plain `codex` there
 open-agent-bridge init --client codex --project /path --identity ticket-123
@@ -458,7 +466,9 @@ How it works:
 - The hard wall is enforced in every client profile's `acceptsChannelMessage`; the inbox reads the local store, which is only populated with accepted (same-namespace) messages.
 - Outbound messages are stamped with the sender's identity, so a `ticket-123` reply stays inside `ticket-123`.
 
-> **Implication:** to delegate to an `agy` running in `ticket-123`, the sender must also run in `ticket-123`. A multi-ticket coordinator would have to send per namespace.
+> **Implication:** to delegate to a peer running in `ticket-123`, the sender must also run in `ticket-123`. A multi-ticket coordinator would have to send per namespace.
+>
+> **agy:** `antigravity install-plugin` takes no `--identity`, and the plugin's MCP entry sets none. Scoping an agy session to an identity is not verified yet.
 
 ### Dashboard
 
@@ -524,10 +534,10 @@ The `mcp config` command writes absolute paths for the current machine. Commit t
 | Tool | Description |
 | :--- | :--- |
 | `agent_bridge_guide` | Built-in MCP usage guide. Returns setup, send/reply workflow, ACK semantics, and troubleshooting by topic. |
-| `list_agents` | Discover connected agents and client sessions in the current identity namespace. Client rows include peer labels like `[Claude Code]`, `[OpenCode]`, `[OpenCode bridge]`, `[Codex inner]`, `[Codex bridge]`, and `[Antigravity inner]`, plus the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
+| `list_agents` | Discover connected agents and client sessions in the current identity namespace. Client rows include peer labels like `[Claude Code]`, `[OpenCode]`, `[pi]`, `[Codex inner]`, `[Codex bridge]`, and `[Antigravity inner]`, plus the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
 | `channel_inbox` | Inspect channel conversations. Bounded by default (`limit=25`, previews only) so a flood of pending messages never buries new ones; the response carries a `summary` block and a `replyWith` hint per pending entry. |
 | `channel_clear` | Clear handled conversations from the inbox so new ones keep surfacing. Scope `answered` / `failed` / `all` (never bulk-clears unanswered work) or a specific `conversationId`. |
-| `message_client_session` | Send a message to a named client session. Automatically resolves OpenCode/Codex inner clients to their bridge daemon when available and infers `expectsResponse` when omitted. |
+| `message_client_session` | Send a message to a named client session. Reuses one thread per pair of agents unless you pass a `conversationId`, resolves a Codex inner client to its `oab codex start` bridge when one runs, and infers `expectsResponse` when omitted. |
 | `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
 
 Check live tool and agent status at any time:
@@ -536,14 +546,12 @@ Check live tool and agent status at any time:
 pnpm run dev -- mcp status
 ```
 
-### Agent-bridge skill (Claude Code only)
+### Agent-bridge skill
 
-The MCP `instructions` block intentionally stays compact. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, OpenCode plugin setup, and Codex `--remote` setup — lives in skill files loaded on demand by each client:
+The MCP `instructions` block intentionally stays compact. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, and per-client setup — lives in skill files loaded on demand by each client:
 
-- **OpenCode:** `.opencode/skills/open-agent-bridge/SKILL.md` (project-local, auto-scanned by OpenCode)
-- **Codex:** `~/.codex/skills/open-agent-bridge/SKILL.md` (global Codex skill)
-
-Each skill file includes a `references/` folder with peer-type taxonomy, send/reply patterns, delivery states, routing rules, troubleshooting ladder, and the injection prompt contract.
+- **Claude Code, Codex, agy:** `plugins/open-agent-bridge/skills/agent-bridge/SKILL.md`, shipped by the shared plugin.
+- **OpenCode:** `.opencode/skills/open-agent-bridge/SKILL.md` (project-local, auto-scanned by OpenCode), with a `references/` folder covering peer types, send/reply patterns, delivery states, routing rules, the troubleshooting ladder, and the injection prompt contract.
 
 The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for agents that don't load skill files.
 
@@ -551,7 +559,7 @@ The same content can also be queried at runtime from any client via the `agent_b
 
 ## Channels
 
-Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, OpenCode, Codex, Antigravity (`agy`), the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
+Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, Codex, OpenCode, pi, Antigravity (`agy`), the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
 
 This is the core feature of the project. Everything else (MCP tools, bridge daemons, dashboard chat) is built on top of it.
 
@@ -568,7 +576,7 @@ Conversation abc-123
 ```
 
 Key properties:
-- `conversationId` is stable for the entire thread — use it to continue an existing conversation.
+- `conversationId` is stable for the entire thread — use it to continue an existing conversation. `message_client_session` without one reuses a deterministic thread per pair of agents, so both sides share it without looking it up.
 - `replyTo` links a message to the specific `messageId` it responds to.
 - `expectsResponse: true` marks a message as pending until a reply arrives. In MCP sends, the adapter **defaults to `true`** when you omit the field (agent-to-agent messages are a conversation, not a log stream). Only explicit fire-and-forget markers in the text — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, etc. — downgrade it to `false`. Pass the flag explicitly for deterministic behavior.
 - `requiresAck: true` requests an explicit delivery acknowledgement from the recipient.
@@ -602,8 +610,8 @@ Each message transitions through delivery states tracked via `ChannelAck` record
 
 ```
 queued
-  └─→ delivered_to_bridge       (bridge daemon received it)
-        └─→ displayed_to_client (client session received it)
+  └─→ delivered_to_bridge       (the recipient's MCP adapter or bridge received it)
+        └─→ displayed_to_client (handed to the live session: inbox socket, turn/start, LS RPC)
               ├─→ answered       (recipient replied)
               └─→ failed         (delivery or reply failed)
 ```
@@ -647,7 +655,8 @@ Parameters:
   clientId?     string   — Exact agentId of the target (skips all resolution)
   clientType?   string   — Disambiguate when a project has multiple sessions
                            ("claude-code" | "opencode" | "codex" | "antigravity")
-  conversationId? string — Continue an existing conversation thread
+  conversationId? string — Thread to use. Omitted → the deterministic thread for
+                           this pair of agents (the same one every time)
   replyTo?      string   — messageId this message responds to
   taskId?       string   — Associate with a task
   expectsResponse? boolean — Whether you expect a reply. Default: true. Only explicit
@@ -656,8 +665,8 @@ Parameters:
 ```
 
 `expectsResponse` controls whether the receiver should answer:
-- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up OpenCode/Codex's bridge (or push into a live `agy` TUI) with a "reply required" prompt, and Claude Code will surface it as a pending conversation.
-- **Pass `false`** (or include explicit FYI markers — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, `for your information`, `no need to reply`) for fire-and-forget. The bridge daemon will inject the message as **informational** context and suppress the receiver's outbound reply.
+- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` starts a turn in the receiver's live session with a "reply required" prompt, and it stays a pending conversation until answered.
+- **Pass `false`** (or include explicit FYI markers — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, `for your information`, `no need to reply`) for fire-and-forget. The message is injected as **informational** context and the receiver's outbound reply is suppressed.
 - For deterministic workflows pass the flag explicitly — text inference is a convenience for proactive sends, not a contract.
 
 The mapping from message text to the boolean lives in [`inferExpectsResponse`](src/mcp/adapter.ts) and is unit-tested under `src/__tests__/peer-type-label.test.ts`.
@@ -666,7 +675,7 @@ The mapping from message text to the boolean lives in [`inferExpectsResponse`](s
 1. `clientId` provided → direct lookup, no further resolution
 2. No `clientId` and no `project`, but `conversationId` provided → resolves from conversation history
 3. `project` provided → filter by project path/name match
-4. Multiple matches → sorted by client type priority: bridge daemons first (`app-server-bridge`, `opencode-plugin-bridge`), then `claude-code` > `claude` > `opencode` > `codex-cli` > `codex` > `antigravity`
+4. Multiple matches → sorted by client type priority: bridge daemons first (`oab codex start`'s `app-server-bridge`), then `claude-code` > `claude` > `opencode` > `antigravity` > `codex`, then any other client (e.g. `pi`) — pass `clientId` or `clientType` to pick one explicitly
 
 Returns: `toAgentId`, `conversationId`, `messageId`, `deliveryState`.
 
@@ -815,18 +824,18 @@ message_client_session(
 )
 → conversationId: "abc-123", messageId: "msg-001", deliveryState: "queued"
 
-# Step 3 — Codex processes the turn via app-server bridge, sends reply
-# (happens automatically via CodexAppServerBridge → turn/start JSON-RPC)
+# Step 3 — the message starts a turn in the live Codex TUI; Codex answers with `reply`
+# (Codex's MCP adapter → app-server daemon → turn/start on the user's thread)
 
-# Step 4 — check the inbox
+# Step 4 — the answer arrives in Claude Code as a new turn; it is also in the inbox
 channel_inbox
 → conversationId: "abc-123", status: "pending"
   lastMessagePreview: "Found 2 N+1 issues in getUserPosts() and..."
-  replyWith: { agentId: "client-codex-bridge-xyz", conversationId: "abc-123", replyTo: "msg-002" }
+  replyWith: { agentId: "client-codex-mcp-client-xyz", conversationId: "abc-123", replyTo: "msg-002" }
 
 # Step 5 — acknowledge and close the thread
 reply(
-  agentId: "client-codex-bridge-xyz",
+  agentId: "client-codex-mcp-client-xyz",
   conversationId: "abc-123",
   replyTo: "msg-002",
   message: "Thanks, applying the fix now."
@@ -908,29 +917,31 @@ POST http://localhost:4999/notify-claude
 
 ---
 
-### OpenCode bridge (plugin push)
+### OpenCode and pi (host inbox socket)
 
-OpenCode's bridge is a local plugin installed by:
+OpenCode and pi can only start a turn from inside their own process, so the part that does it lives in their plugin (OpenCode) or extension (pi). Routing, the identity wall and the ACKs stay in the MCP adapter, which is the agent's child — so each session still has exactly one registry row (`[OpenCode]` / `[pi]`).
 
-```bash
-pnpm run dev -- opencode install-plugin --project /path/to/opencode-project
-# or, after build/install:
-open-agent-bridge opencode install-plugin --project /path/to/opencode-project
+```
+Incoming channel message
+  → the agent's MCP adapter receives it via the registry WS
+  → finds the inbox socket its parent opened, from process.ppid:
+      $XDG_RUNTIME_DIR/open-agent-bridge/inbox-<pid>.sock            (pi)
+      $XDG_RUNTIME_DIR/open-agent-bridge/inbox-<pid>-<dirhash>.sock  (OpenCode: one server, many projects)
+  → writes the same NDJSON user frame as for Claude Code, tagged with the message id
+  → the plugin / extension starts the turn:
+      OpenCode → session.prompt({ delivery: "queue" }) in your session, or in a session
+                 named "open-agent-bridge" when the terminal is on its home screen
+                 (the terminal half then opens it; elsewhere it shows a toast)
+      pi       → pi.sendMessage(…, { triggerTurn: true, deliverAs: "followUp" })
+  → the agent answers with the `reply` tool
 ```
 
-The installer copies the bridge plugin into `.opencode/plugins/agent-bridge.ts`. For global use it writes to `~/.config/opencode/plugins/agent-bridge.ts`. OpenCode auto-scans local plugins, so the installer does not need to mutate `opencode.json` for plugin registration.
+- **Private sockets.** The directory is `0700` and the socket `0600`; falls back to the OS temp dir without `XDG_RUNTIME_DIR`. The adapter never forwards Claude Code's messaging token to these sockets.
+- **One turn per message.** Listeners drop a message id they already turned into a turn, so two adapters in one agent (an old MCP entry next to the plugin's) or a registry replay cannot start it twice.
+- **Busy sessions queue it.** OpenCode queues behind the running turn instead of steering it; pi delivers it as a follow-up.
+- **No socket, no ack.** These agents ignore MCP notifications, so when the socket is missing or the write fails the message stays pending and the next registry sync retries it — no false `displayed_to_client`.
 
-At runtime the plugin:
-
-1. Registers a client row named like `<project> (opencode bridge)` with `clientVersion: "opencode-plugin-bridge"`.
-2. Identifies its WebSocket as `client-opencode-bridge-{hash}` so the registry can target it directly.
-3. Tracks the active OpenCode session from `session.created`, `session.updated`, and `session.idle` events.
-4. Injects inbound channel messages with `ctx.client.session.prompt_async`.
-5. Sends delivery ACKs and periodically re-syncs missed pending messages from `/channel/conversations`.
-
-The injected prompt mirrors the Codex format. If `expectsResponse !== false`, OpenCode receives a "reply required" turn with the exact `agent-bridge.reply` fields to copy. Informational messages are marked "no reply" and tell the receiving agent not to call `reply`.
-
-OpenCode can also connect to the MCP adapter as a normal MCP client. In that case `OpenCodeClientProfile` accepts direct messages for the OpenCode MCP session and sibling bridge messages for the same project, so `channel_inbox(pendingOnly=true)` still works even when auto-routing chooses the plugin bridge.
+Install with `oab opencode install-plugin` / `oab pi install-extension` (see [OpenCode](#opencode) and [pi](#pi)). The injected prompt is the shared template, with the reply call pre-filled.
 
 ---
 
@@ -1009,36 +1020,39 @@ On those older releases, the inner MCP client of an isolated `codex` session sti
 
 ---
 
-### Antigravity bridge (Cascade Language Server push)
+### Antigravity (attach + plugin hooks)
 
-Antigravity (`agy`) has no ACP and no app-server. It does, however, spawn a **Cascade Language Server** (Codeium/Windsurf lineage) on a random localhost port whenever it runs. `AntigravityLsBridgeService` uses that to push channel messages into the live TUI:
+Antigravity (`agy`) runs a **language server** (Codeium/Windsurf lineage) inside its process, and its `SendUserCascadeMessage` RPC starts a real user turn in a live conversation. agy ≥ 1.3 only accepts that RPC with a CSRF token, which it hands to the commands its own agent runs — not to MCP servers, not to hooks. The plugin closes that gap:
 
-1. Discovers the language server's HTTP port — parses the newest `~/.gemini/antigravity-cli/log/cli-*.log` (`listening on random port at <N> for HTTP`), with an `ss`-based fallback, and verifies it via `GetWorkspaceInfos`.
-2. Resolves the active `cascadeId` for the workspace (via `GetAllCascadeTrajectories`).
-3. On each pending channel message, calls `SendUserCascadeMessage` (`POST …/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`) so `agy` processes it as a **real user turn** — not a passive notification.
-4. Deduplicates by message ID and applies a per-message re-injection blackout (state file `.open-agent-bridge/antigravity-ls-state.json`).
+```
+First turn of an agy session
+  → SessionStart hook (plugin hooks.json): asks the agent to run
+      `open-agent-bridge antigravity attach` once
+  → attach (sees ANTIGRAVITY_LS_ADDRESS + ANTIGRAVITY_CSRF_TOKEN) writes
+      $XDG_RUNTIME_DIR/open-agent-bridge/agy-<agyPid>.json   (0600 in a 0700 dir)
+  → every later hook (SessionStart / Stop) refreshes the conversation id in that file
 
-The bridge runs as a poller registered as a client (`clientName: "antigravity"`). It is identity-aware: it resolves the agy session by `project + identity` and only injects pending messages for that namespace.
-
-**Setup:**
-
-```bash
-# 1. Install the MCP config (and restart agy so it loads the server)
-open-agent-bridge antigravity install-plugin --project "/abs/path" [--identity ticket-123]
-
-# 2. Run the push daemon (match the identity)
-open-agent-bridge antigravity ls-push --project "/abs/path" [--identity ticket-123]
+Incoming channel message
+  → agy's MCP adapter (agy's direct child) reads agy-<ppid>.json
+  → SendUserCascadeMessage on the recorded conversation, deliveryStrategy WHEN_IDLE,
+    with the cascadeConfig and agent spec of your last message (agy refuses a turn
+    without a plan model; this keeps the model you picked)
+  → a new turn in the live conversation: at once if idle, after the running turn otherwise
+  → agy answers with the `reply` tool
 ```
 
-Options for `ls-push`: `--registry-url <url>`, `--identity <id>`, `--client-id <id>`, `--poll-interval-ms <n>` (default `2000`), `--retry-interval-ms <n>` (default `30000`), `--once`, `--verbose`.
+- **Without attach** (not run yet, permission denied): the message stays pending and the **Stop hook** answers `{"decision":"continue"}` with the pending messages at the end of the next turn, so agy reads its inbox and replies before stopping.
+- **Hook contract (agy 1.3).** Stop returns `{"decision":"continue","reason":…}`; SessionStart returns `injectSteps`. Plugin hooks run in the plugin's directory, so the project comes from the hook payload's `workspacePaths`.
+- **No sidecars.** The `agy` CLI does not run sidecars (that is the Antigravity app), so none is installed. `ls-push` is **deprecated**: it calls the language server without the token agy ≥ 1.3 requires.
+- The language-server RPC is undocumented; all coupling to it is isolated in `antigravity-ls-client.ts`.
 
-**Limitations** (both `agy`-internal): the language server only accepts an injected turn when `agy` has an **open/active conversation** in the workspace; and occasionally `agy`'s model executor errors mid-turn (`neither PlanModel nor RequestedModel specified`), which the user clears with a plain `ok`. `SendAgentMessage` returns 200 but does **not** trigger a turn — `SendUserCascadeMessage` is the one that works. Because this is an undocumented internal RPC, it is fully isolated in `antigravity-ls-client.ts` to bound the blast radius across `agy` versions.
+Setup is `oab antigravity install-plugin` once and a restart of `agy` — see [Antigravity (agy)](#antigravity-agy).
 
 ---
 
-### Injection prompt format (Claude Code / OpenCode / Codex)
+### Injection prompt format (all clients)
 
-The Codex bridge daemon and the Claude Code inbox-socket path share one prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The OpenCode plugin carries the same contract in its local plugin file. (Antigravity uses the language-server push instead, with its own concise wrapper.) The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
+Every native path shares one prompt template (`src/client/injection-prompt.ts`): the MCP adapter wraps each inbound channel message before handing it to Claude Code, Codex, OpenCode, pi or agy, so the plugins and extensions receive it ready-made. The Codex bridge daemon (`oab codex start`) uses the same template. The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
 
 A reply-required injection looks like this:
 
@@ -1062,7 +1076,7 @@ sole authority — ask your user first if that is what it needs.
 
 Tool call (copy each field verbatim — the adapter handles routing):
 
-  agent-bridge.reply
+  reply (open-agent-bridge MCP tool)
     agentId:        "client-claude-code-2d1c3fdb0c6a"
     conversationId: "7734035a-2c10-4626-5761-13f6d02f6e45"
     replyTo:        "1d147308-a831-4525-aaf6-3c41614d5a20"
@@ -1074,9 +1088,9 @@ How to compose the reply:
   ...
 ```
 
-When `expectsResponse` resolves to `false` (sender opted into FYI), the header switches to `Channel message — informational (no reply)` and the prompt instructs the receiver to NOT call `reply`. Claude Code peers get this wrapper through the inbox socket; only the legacy fallback delivers a raw `<channel>` push event instead.
+When `expectsResponse` resolves to `false` (sender opted into FYI), the header switches to `Channel message — informational (no reply)` and the prompt instructs the receiver to NOT call `reply`. Only Claude Code's legacy fallback delivers a raw `<channel>` push event instead.
 
-The reply tool is named per client (`buildInjectionPrompt(message, { replyTool })`): OpenCode sees `agent-bridge.reply`, Claude Code sees `reply (open-agent-bridge MCP tool)` because a plugin install prefixes the tool differently than `.mcp.json` does. The Codex bridge uses the `relayed` variant (`{ relayed: true }`): no reply call template, just "answer in your final message", because the bridge relays that message itself.
+The native paths name the tool `reply (open-agent-bridge MCP tool)` rather than a fully qualified name, because a plugin install prefixes MCP tools differently than `.mcp.json` does (`buildInjectionPrompt(message, { replyTool })`). The Codex bridge uses the `relayed` variant (`{ relayed: true }`): no reply call template, just "answer in your final message", because the bridge relays that message itself.
 
 Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEGIN/END markers, literal IDs in the call template, header wording, peer framing, reply tool name) so future edits don't silently regress it.
 
@@ -1087,12 +1101,13 @@ Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEG
 | Client | Bridge type | How messages arrive | Requires daemon |
 | :--- | :--- | :--- | :--- |
 | **Claude Code** | Native inbox socket (built into the MCP adapter) | User frame on `$CLAUDE_CODE_MESSAGING_SOCKET` → queued peer message, runs as the next turn. Fallback: `<channel>` block via `notifications/claude/channel` (legacy flag only) | No — part of MCP adapter |
-| **OpenCode** | Local plugin bridge | `session.prompt_async` → OpenCode processes as a prompt turn | No separate process — plugin runs inside OpenCode |
 | **Codex** | Native via the app-server daemon (built into the MCP adapter); headless bridge as alternative | `turn/start` on the user's live TUI thread (codex ≥ 0.162); or on a bridge-owned thread with `oab codex start` | No for native — part of MCP adapter; yes for `oab codex start` |
-| **Antigravity (`agy`)** | Cascade Language Server push | `SendUserCascadeMessage` → agy processes as a user turn in the live TUI | Yes — `antigravity ls-push` |
+| **OpenCode** | Host inbox socket + plugin (server half + terminal half) | Frame on the plugin's socket → `session.prompt` (`queue`) in your session; on the home screen the terminal opens the session it went to | No — plugin runs inside OpenCode |
+| **pi** | Host inbox socket + extension | Frame on the extension's socket → `pi.sendMessage` (`triggerTurn`, follow-up) | No — extension runs inside pi |
+| **Antigravity (`agy`)** | Language server, after a one-time `attach`; Stop hook as fallback | `SendUserCascadeMessage` (`WHEN_IDLE`) → a user turn in the live conversation | No — plugin hooks + MCP adapter |
 | **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
 
-All paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
+All paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism. Claude Code falls back to its channel notification when native delivery fails; Codex, OpenCode, pi and agy ignore MCP notifications, so for them a failed delivery stays pending and the registry sync retries it — no false ack.
 
 ---
 
@@ -1165,19 +1180,21 @@ Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`).
 | `find <query>` | Search agents by skill or project type. |
 | `delegate <skill-id> <message>` | Send a task to the healthiest agent exposing a given skill. |
 | `broadcast <message>` | Send a message to all healthy agents. |
-| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code, OpenCode, Codex, Antigravity, and other MCP clients). Accepts `--identity <ns>` (or `AGENT_BRIDGE_IDENTITY`). |
+| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code, Codex, OpenCode, pi, Antigravity, and other MCP clients). Accepts `--identity <ns>` (or `AGENT_BRIDGE_IDENTITY`). |
 | `mcp config [--write] [--global]` | Print or write `.mcp.json` configuration. |
 | `mcp status` | Show live agents and registered MCP tools. |
 | `mcp server` | Start the MCP adapter in HTTP/SSE mode (port 6000). |
-| `opencode install-plugin` | Install the local OpenCode plugin bridge into a project or globally. |
+| `opencode install-plugin` | Install the OpenCode plugin (`open-agent-bridge/{index,tui}.ts` on OpenCode 2; single file on OpenCode 1) into a project or globally (`--global`). |
+| `pi install-extension` | Install the pi extension into `~/.pi/agent/extensions/` (or `--project <path>`). |
 | `codex start` | Headless Codex: registry + bridge that owns its own thread + Codex TUI (codex < 0.162, or no TUI). On codex ≥ 0.162 plain `codex` already gets messages. |
 | `codex app-bridge` | Start the Codex app-server bridge daemon only. |
 | `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
 | `codex tmux-sidecar` | Poll and inject pending channel messages into a tmux pane. |
-| `antigravity install-plugin` | Write the `agy` MCP config (`.agents/mcp_config.json`) into a workspace or globally. Accepts `--identity`. |
-| `antigravity ls-push` | Push pending channel messages into a live `agy` TUI via its Cascade Language Server. Accepts `--identity`, `--poll-interval-ms`, `--once`. |
-| `antigravity hook-stop` | Stop-hook handler: deliver pending messages (hook-driven setups). |
-| `antigravity hook-session-start` | SessionStart-hook handler: surface pending messages as context. |
+| `antigravity install-plugin` | Install the shared plugin into `agy` (`agy plugin install`): MCP server, skill, commands, SessionStart/Stop hooks. |
+| `antigravity attach` | Run by agy's own agent (the SessionStart hook asks it to): lets the adapter start turns in that conversation. |
+| `antigravity hook-stop` | Stop-hook handler (plugin): refresh the conversation, deliver pending messages and keep agy going. |
+| `antigravity hook-session-start` | SessionStart-hook handler (plugin): ask for `attach` when needed, surface pending messages. |
+| `antigravity ls-push` | **Deprecated** — does not deliver on agy ≥ 1.3 (no CSRF token). |
 | `dashboard` | Print or open the dashboard URL in the browser. |
 
 ---
@@ -1186,7 +1203,7 @@ Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`).
 
 | Script | Command | Description |
 | :--- | :--- | :--- |
-| `build` | `tsc` + plugin copy | Compile TypeScript to `dist/` and copy the OpenCode plugin files into `dist/client/opencode-plugin/`. |
+| `build` | `tsc` + plugin copy | Compile TypeScript to `dist/` and copy the OpenCode plugin files (`agent-bridge.ts`, `tui.ts`) and the pi extension into `dist/client/`. |
 | `dev` | `tsx src/cli/index.ts` | Run CLI from source without building. |
 | `start` | `node dist/cli/index.js` | Run the compiled CLI. |
 | `clean` | `rm -rf dist` | Delete build output. |
@@ -1215,7 +1232,7 @@ src/
 ├── client/
 │   ├── a2a-client.ts                A2AClient: HTTP + WS client for agent-to-agent calls
 │   ├── registry-client.ts           RegistryClient: HTTP client for the registry REST API
-│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/OpenCode/Codex/Antigravity)
+│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/Codex/OpenCode/pi/Antigravity)
 │   ├── conversation-session-store.ts In-memory conversation state with ACK tracking
 │   ├── codex-app-server-bridge.ts   CodexAppServerBridge daemon
 │   ├── codex-app-server-client.ts   WS client for the Codex app-server protocol
@@ -1223,14 +1240,18 @@ src/
 │   ├── codex-session-files.ts       Read/write active Codex session marker
 │   ├── codex-tmux.ts                Low-level tmux pane helpers for Codex
 │   ├── codex-tmux-bridge-service.ts tmux-based Codex injection sidecar
-│   ├── antigravity-ls-client.ts     Cascade Language Server client (port discovery + SendUserCascadeMessage)
-│   ├── antigravity-ls-bridge-service.ts  ls-push poller — inject pending messages into live agy TUI
+│   ├── claude-inbox-socket.ts       Writes user frames to Claude Code's (or a host) inbox socket
+│   ├── codex-daemon-socket.ts       Native Codex delivery through the app-server daemon
+│   ├── host-inbox-socket.ts         Host inbox sockets for OpenCode / pi (path, lookup, listener)
+│   ├── antigravity-ls-client.ts     agy language-server client (attach handoff file + SendUserCascadeMessage)
+│   ├── antigravity-ls-bridge-service.ts  ls-push poller (deprecated on agy ≥ 1.3)
 │   ├── antigravity-pending.ts       collectPendingForClient helper (identity-scoped)
 │   ├── antigravity-runtime-discovery.ts  Detect running agy process
 │   ├── antigravity-history.ts       Read agy conversation/history storage
 │   ├── antigravity-agents-file.ts   Append original-request context for agy hooks
-│   ├── antigravity-hooks.ts         Build Stop / SessionStart hook outputs
-│   ├── opencode-plugin/             OpenCode local plugin source copied by `opencode install-plugin`
+│   ├── antigravity-hooks.ts         Build Stop / SessionStart hook outputs (agy 1.3 contract)
+│   ├── opencode-plugin/             OpenCode plugin source (server half + terminal half) copied by `opencode install-plugin`
+│   ├── pi-extension/                pi extension source copied by `pi install-extension`
 │   ├── channel-transport.ts         WebSocket transport to registry (stamps identity)
 │   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
 │   ├── conversation-service.ts      High-level send/reply/inbox helpers
@@ -1278,11 +1299,13 @@ src/
 | Registry HTTP + WS + SQLite | stable |
 | MCP adapter — 6 tools | stable |
 | Claude Code native push (inbox socket, no dev flag) | stable — needs Claude Code ≥ 2.1.224; older releases use the legacy `<channel>` push (`--legacy-channels`) |
-| OpenCode plugin push bridge | stable |
 | Codex native push (app-server daemon, live TUI thread) | beta — needs codex-cli ≥ 0.162 |
 | Codex app-server bridge (bridge-owned thread, `oab codex start`) | stable |
 | Codex sub-agent delegation (`--effort ultra`) | beta — opt-in, model-dependent |
-| Antigravity native push (Cascade Language Server, `ls-push`) | stable — requires an open agy conversation |
+| OpenCode native push (plugin: host inbox socket + terminal half) | beta — OpenCode 2.x; the "toast in another session" case is not verified live |
+| pi native push (extension: host inbox socket) | beta — needs pi ≥ 1.3 |
+| Antigravity native push (plugin hooks + `attach`, language server) | beta — needs agy ≥ 1.3; Stop-hook fallback without `attach` |
+| Antigravity `ls-push` | deprecated — does not deliver on agy ≥ 1.3 |
 | Identity scoping (`--identity`, per-namespace inbox + `list_agents`) | stable |
 | Inbox bounding + `channel_clear` + terminal sweep | stable |
 | Dashboard Vue SPA (identity badges + grouping) | stable |
@@ -1303,7 +1326,7 @@ pnpm run test   # vitest — runs the full suite once (src/**/*.test.ts only)
 pnpm run lint   # biome — lint and style check
 ```
 
-Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, MCP adapter routing, identity scoping (`identity-scoping.test.ts`, `stable-agent-id.test.ts`), `channel_clear` scope selection (`channel-clear-select.test.ts`), the Antigravity language-server client (`antigravity-ls-client.test.ts`), and the Antigravity history/hooks/profile/runtime modules.
+Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, MCP adapter routing, identity scoping (`identity-scoping.test.ts`, `stable-agent-id.test.ts`), `channel_clear` scope selection (`channel-clear-select.test.ts`), host inbox sockets (round trip, permissions, parent-pid lookup, dedupe by message id, no Claude token forwarded — `host-inbox-socket.test.ts`), the Antigravity language-server client and attach handoff (`antigravity-ls-client.test.ts`), and the Antigravity history/hooks/profile/runtime modules.
 
 ---
 
@@ -1317,11 +1340,11 @@ Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), 
 - **Claude Code native push is best effort.** It needs Claude Code ≥ 2.1.224 with cross-session messaging on. Claude Code's ingress guard may hold or refuse a peer message depending on the session's permission mode, and the socket returns no confirmation, so `displayed_to_client` means "handed to Claude Code", not "read". Without a socket, live push only works with `oab claude --legacy-channels`; otherwise messages wait in `channel_inbox`.
 - **Codex's sandbox can be blocked by Ubuntu.** With `kernel.apparmor_restrict_unprivileged_userns=1` (the default on Ubuntu ≥ 23.10), bubblewrap cannot set up its network namespace (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). An interactive Codex asks you to run the command outside the sandbox; the bridge thread runs with `approvalPolicy: never`, so its shell commands simply fail and Codex can only answer from what it can reason about without a shell. Check with `codex sandbox linux -- true`; fixing it is an OS change (an AppArmor profile for `bwrap`).
 - **Codex `--effort` is thread-wide.** Codex keeps a turn's reasoning effort for the rest of the thread, so the level applies to every channel message the bridge handles, not to a single task.
-- **OpenCode push requires the local plugin.** OpenCode can call the MCP tools without the plugin, but automatic turn injection depends on `open-agent-bridge opencode install-plugin` and an OpenCode restart. Without the plugin bridge, inbound work must be discovered through `channel_inbox`.
+- **OpenCode and pi push require their plugin / extension.** Without `oab opencode install-plugin` / `oab pi install-extension` (and a restart) there is no inbox socket: messages stay pending until the agent calls `channel_inbox`. pi also needs a model configured (`/login`) to answer.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
 - **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported. The method is a stub — it is not announced in the Agent Card.
 - **`ask --stream` flag is a no-op.** The `--stream` option is declared in the CLI but the handler never reads it. Streaming task output is not implemented.
-- **Antigravity push needs a live conversation + occasional nudge.** `antigravity ls-push` injects via `agy`'s Cascade Language Server, which only accepts a turn when `agy` has an open/active conversation in the workspace. The underlying RPC (`SendUserCascadeMessage`) is undocumented and may change between `agy` versions (isolated in `antigravity-ls-client.ts`). `agy`'s model executor also errors mid-turn intermittently (`neither PlanModel nor RequestedModel specified`), which the user clears with a plain `ok`.
+- **Antigravity push depends on `attach` and an undocumented RPC.** Live delivery starts after agy's agent runs `open-agent-bridge antigravity attach` (the SessionStart hook asks for it on the first turn; agy may ask permission once). Until then, and before agy has a conversation at all, messages wait for the Stop hook at the end of the next turn. `SendUserCascadeMessage` is an internal language-server RPC that may change between `agy` versions (isolated in `antigravity-ls-client.ts`). Identity scoping for agy is not verified.
 - **Identity is a hard wall.** Cross-namespace delegation is intentionally impossible — the sender must run in the same `--identity` as the recipient. A multi-ticket coordinator has to send per namespace. The registry storage remains a global pool; isolation is enforced by inbox/`list_agents` filtering, not at the registry API.
 
 ---

@@ -1,6 +1,6 @@
 # Injection Prompt Contract
 
-When a bridge daemon (Codex, Gemini) or the OpenCode plugin delivers an inbound channel message to a client session, it wraps the content in a structured prompt. This contract is locked by `src/__tests__/injection-prompt.test.ts`.
+Every client (Claude Code, Codex, OpenCode, pi, Antigravity) gets an inbound channel message as a new turn whose text is this structured prompt (`buildInjectionPrompt`). This contract is locked by `src/__tests__/injection-prompt.test.ts`. The excerpts below are abridged; the live prompt also warns that the message comes from another agent, not the user.
 
 ## Reply-required format
 
@@ -20,7 +20,7 @@ Message ID:    <messageId>
 
 Tool call (copy each field verbatim — the adapter handles routing):
 
-  agent-bridge.reply
+  reply (open-agent-bridge MCP tool)
     agentId:        "<fromAgentId>"
     conversationId: "<conversationId>"
     replyTo:        "<messageId>"
@@ -47,14 +47,14 @@ Message ID:    <messageId>
 <original message content>
 ----- END MESSAGE -----
 
-This message does not require a reply. Do NOT call agent-bridge.reply for
-this message. Process it as informational context only.
+The sender flagged this as informational — do NOT call
+reply (open-agent-bridge MCP tool). ...
 ```
 
 ## Rules for receiving agents
 
 - The IDs in the tool call template (`agentId`, `conversationId`, `replyTo`) are literal — copy them verbatim.
-- Do not derive or reconstruct the IDs. The adapter handles routing, including Codex/Gemini inner-to-bridge redirect.
+- Do not derive or reconstruct the IDs. The adapter handles routing, including the Codex inner-to-bridge redirect.
 - For reply-required messages: call `reply` after completing any work the message implies.
 - For informational messages: do NOT call `reply`. Process the content as context.
 
@@ -65,9 +65,9 @@ this message. Process it as informational context only.
 - The `replyTo` field ensures the response threads correctly to the specific message.
 - The header wording (`reply required` vs `informational`) lets the receiving LLM make a binary decision without reasoning about `expectsResponse` semantics.
 
-## Claude Code exception
+## Claude Code fallback
 
-Claude Code does NOT receive the injection wrapper. It receives the raw `<channel>` push event:
+Claude Code ≥ 2.1.224 gets this same prompt through its inbox socket. Only when the socket is unavailable (older releases launched with `oab claude --legacy-channels`) does it receive the raw `<channel>` push event instead:
 
 ```xml
 <channel source="open-agent-bridge"

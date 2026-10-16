@@ -43,3 +43,10 @@ dist/
 # See .mcp.json.example for the shape.
 /.mcp.json
 /.agents/mcp_config.json
+
+# OpenCode: plugin and deps installed per machine by `oab opencode install-plugin`
+.opencode/plugins/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/node_modules/
+.opencode/opencode.json
