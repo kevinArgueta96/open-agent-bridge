@@ -12,6 +12,7 @@ import { isRegistryUp, whichBinary, DEFAULT_REGISTRY_URL } from "../lib/runtime.
 import { MCP_SERVER_NAME } from "../lib/mcp-config.js";
 import { claudeSupportsInboxSocket } from "../../client/claude-inbox-socket.js";
 import { codexSupportsDaemon } from "../../client/codex-daemon-socket.js";
+import { loadPromptTemplate, promptTemplatePath, promptTemplateWarnings } from "../../client/prompt-template.js";
 
 function agyPluginList(): string {
   try {
@@ -172,6 +173,19 @@ export function registerDoctorCommand(program: Command): void {
             detail: `${codexConfig} sets AGENT_BRIDGE_PROJECT for every Codex session — run: oab init --client codex`,
           });
         }
+      }
+
+      // A custom prompt template applies to every agent; say which one, and what it drops.
+      const templatePath = promptTemplatePath();
+      if (templatePath) {
+        const template = loadPromptTemplate();
+        const warnings = template === undefined ? ["unreadable"] : promptTemplateWarnings(template);
+        checks.push({
+          name: "Prompt template",
+          ok: warnings.length === 0,
+          detail: [templatePath, ...warnings].join(" — "),
+          optional: true,
+        });
       }
 
       if (options.json) {

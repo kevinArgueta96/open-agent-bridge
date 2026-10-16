@@ -9,6 +9,7 @@ import { ChannelClientRuntime } from "./channel-client-runtime.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { RegistryClient } from "./registry-client.js";
 import { buildInjectionPrompt } from "./injection-prompt.js";
+import { loadPromptTemplate } from "./prompt-template.js";
 import type { ChannelMessage } from "../types/messages.js";
 
 export interface CodexAppServerBridgeOptions {
@@ -583,7 +584,7 @@ export class CodexAppServerBridge extends EventEmitter {
       expectsResponse: message.expectsResponse === true,
     };
 
-    const prompt = buildInjectionPrompt(message, { relayed: true });
+    const prompt = buildInjectionPrompt(message, { relayed: true, template: loadPromptTemplate() });
     const injected = this.client.injectMessage(prompt, ctx);
 
     if (!injected) {

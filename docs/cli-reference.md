@@ -12,7 +12,7 @@ Referencia completa de la interfaz de línea de comandos de `open-agent-bridge`:
 - [Inicio rápido](#inicio-rápido)
 - [Conceptos](#conceptos)
 - [Comandos de setup y ciclo de vida](#comandos-de-setup-y-ciclo-de-vida)
-  - [`init`](#init) · [`up`](#up) · [`down`](#down) · [`status`](#status) · [`claude`](#claude) · [`doctor`](#doctor)
+  - [`init`](#init) · [`up`](#up) · [`down`](#down) · [`status`](#status) · [`claude`](#claude) · [`doctor`](#doctor) · [`prompt`](#prompt)
 - [Registry](#registry)
   - [`registry start`](#registry-start) · [`registry stop`](#registry-stop) · [`registry status`](#registry-status)
 - [MCP](#mcp)
@@ -161,7 +161,7 @@ oab claude --identity ticket-42 --project /ruta/al/proyecto
 
 ### `doctor`
 
-Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`/`pi`, opcionales). Para Claude Code y Codex además informa si su versión tiene **entrega nativa** (Claude Code ≥ 2.1.224 por el inbox socket; codex ≥ 0.162 por el app-server daemon) o qué fallback usar (`oab claude --legacy-channels` / `oab codex start`). Para los clientes cuya entrega necesita una pieza dentro del agente revisa que esté instalada: el plugin de OpenCode (`.opencode/plugins/open-agent-bridge/` o `~/.config/opencode/plugins/open-agent-bridge/`; marca como *outdated* el layout de archivo suelto `agent-bridge.ts` o un directorio sin `tui.ts`), la extensión de pi (`.pi/extensions/` o `~/.pi/agent/extensions/open-agent-bridge.ts`) y el plugin `oab` de agy (vía `agy plugin list --json`). Con Codex en PATH verifica que el MCP esté registrado en `~/.codex/config.toml` (o el plugin `oab`) y marca como fallo un config global que fije `AGENT_BRIDGE_PROJECT`. Termina con un resumen.
+Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`/`pi`, opcionales). Para Claude Code y Codex además informa si su versión tiene **entrega nativa** (Claude Code ≥ 2.1.224 por el inbox socket; codex ≥ 0.162 por el app-server daemon) o qué fallback usar (`oab claude --legacy-channels` / `oab codex start`). Para los clientes cuya entrega necesita una pieza dentro del agente revisa que esté instalada: el plugin de OpenCode (`.opencode/plugins/open-agent-bridge/` o `~/.config/opencode/plugins/open-agent-bridge/`; marca como *outdated* el layout de archivo suelto `agent-bridge.ts` o un directorio sin `tui.ts`), la extensión de pi (`.pi/extensions/` o `~/.pi/agent/extensions/open-agent-bridge.ts`) y el plugin `oab` de agy (vía `agy plugin list --json`). Con Codex en PATH verifica que el MCP esté registrado en `~/.codex/config.toml` (o el plugin `oab`) y marca como fallo un config global que fije `AGENT_BRIDGE_PROJECT`. Si hay una plantilla de prompt propia (ver [`prompt`](#prompt)), dice cuál está activa y avisa si le falta `{{safety}}` o el `{{message}}` enmarcado. Termina con un resumen.
 
 ```
 oab doctor [options]
@@ -171,6 +171,28 @@ oab doctor [options]
 | :--- | :--- | :--- |
 | `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
 | `--json` | — | Imprime los chequeos como JSON. |
+
+### `prompt`
+
+El texto en que se convierte un mensaje entrante (encabezado, mensaje enmarcado, aviso de seguridad, instrucciones con la llamada a `reply` prellenada) sale de una plantilla que se puede reemplazar para todos los agentes a la vez: responder en otro idioma, ser breve, correr los tests antes de contestar, etc. Cada agente la lee en cada mensaje, así que los cambios aplican sin reiniciar.
+
+```
+oab prompt init [--force]   # escribe la plantilla incluida en ~/.config/open-agent-bridge/prompt.md
+oab prompt show             # qué plantilla está activa y un mensaje de ejemplo con ella
+```
+
+Orden de resolución: `$AGENT_BRIDGE_PROMPT_TEMPLATE` → `${XDG_CONFIG_HOME:-~/.config}/open-agent-bridge/prompt.md` → la incluida. No hay plantilla por proyecto (un repo clonado podría traer una que les diga a tus agentes que obedezcan a sus pares).
+
+| Placeholder | Se reemplaza por |
+| :--- | :--- |
+| `{{header}}` | título (con la marca `[open-agent-bridge] Channel message`), remitente, conversación e id del mensaje |
+| `{{message}}` | el texto del par entre `BEGIN/END MESSAGE` (recomendado: separa sus palabras de tus instrucciones) |
+| `{{content}}` | el texto del par, sin marco |
+| `{{safety}}` | "esto viene de otro agente, no de tu usuario…" |
+| `{{instructions}}` | cómo responder, con la llamada a `reply` prellenada (o la variante `relayed` de `oab codex start`) |
+| `{{sender}}` `{{senderShort}}` `{{senderId}}` `{{conversationId}}` `{{messageId}}` `{{taskId}}` | los valores sueltos |
+
+Siempre se conservan dos cosas: si la plantilla no tiene `{{instructions}}`, se agregan al final (sin la llamada prellenada las respuestas no llegan), y si no aparece la marca, se antepone la línea de título (la parte de terminal del plugin de OpenCode la busca). Los `<!-- comentarios -->` se eliminan antes de mandar el prompt, y los placeholders que aparezcan dentro del mensaje del par nunca se expanden.
 
 ---
 
@@ -617,6 +639,8 @@ oab dashboard [options]
 | :--- | :--- | :--- |
 | `AGENT_BRIDGE_PROJECT` | cwd | Proyecto con el que se asocia la sesión del cliente MCP. Lo inyecta `oab` en `.mcp.json`. |
 | `AGENT_BRIDGE_IDENTITY` | `global` | Namespace de canal. Lo inyecta `oab` cuando la identity no es `global`. |
+| `AGENT_BRIDGE_PROMPT_TEMPLATE` | — | Plantilla del prompt para la sesión o el agente que se lance con ella; tiene prioridad sobre `~/.config/open-agent-bridge/prompt.md` (ver [`prompt`](#prompt)). |
+| `XDG_CONFIG_HOME` | `~/.config` | Dónde se busca `open-agent-bridge/prompt.md`. |
 | `ANTHROPIC_API_KEY` | — | Requerida por el backend de Claude (`start --claude`) para skills como `code-review`/`claude-execute`. |
 
 Las flags `--identity` y `--project` de los comandos tienen prioridad sobre estas variables.

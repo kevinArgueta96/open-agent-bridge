@@ -31,6 +31,7 @@ import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { BoundedIdSet } from "../client/bounded-id-set.js";
 import { buildInjectionPrompt } from "../client/injection-prompt.js";
+import { loadPromptTemplate } from "../client/prompt-template.js";
 import {
   claudeInboxSocketAvailable,
   deliverViaClaudeInboxSocket,
@@ -608,7 +609,10 @@ export class McpAgentBridge {
       { notifyOnFailure = true }: { notifyOnFailure?: boolean } = {},
     ) => {
       this.surfacedInboxMessageIds.add(channelMessage.messageId);
-      const prompt = buildInjectionPrompt(channelMessage, { replyTool: "reply (open-agent-bridge MCP tool)" });
+      const prompt = buildInjectionPrompt(channelMessage, {
+        replyTool: "reply (open-agent-bridge MCP tool)",
+        template: loadPromptTemplate(),
+      });
       void deliver(prompt).then((delivered) => {
         if (!delivered) {
           this.surfacedInboxMessageIds.delete(channelMessage.messageId);
