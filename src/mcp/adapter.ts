@@ -211,16 +211,16 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
     overview: [
       "# open-agent-bridge MCP guide",
       "",
-      "Use this MCP server to send channel messages between Claude Code, OpenCode, Codex, and Antigravity sessions.",
+      "Use this MCP server to send channel messages between Claude Code, Codex, OpenCode, pi, and Antigravity (`agy`) sessions.",
       "",
       "Tools:",
       "- `agent_bridge_guide(topic?)`: read this usage guide.",
-      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, `[Antigravity inner]`.",
+      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[Codex inner]`, `[OpenCode]`, `[pi]`, `[Antigravity inner]`.",
       "- `message_client_session(...)`: proactively send a message to another client session.",
       "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
       "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
       "",
-      "Claude Code (≥ 2.1.224) and Codex (≥ 0.162) receive messages as a new turn in the live session. A Codex session started with `oab codex start` also registers a bridge daemon; routing then auto-redirects its inner client to the bridge. OpenCode sessions auto-create channels with all visible peers on startup. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
+      "Every client receives a message as a new turn in its live session: Claude Code (≥ 2.1.224) through its inbox socket, Codex (≥ 0.162) through its app-server daemon, OpenCode 2 and pi through their plugin / extension, and `agy` through its language server once the session is attached. The receiver answers with `reply`. A Codex session started with `oab codex start` also registers a bridge daemon; routing then auto-redirects its inner client to the bridge. OpenCode sessions auto-create channels with all visible peers on startup.",
     ].join("\n"),
     setup: [
       "# Setup",
@@ -230,10 +230,12 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- Start `claude` normally: Claude Code ≥ 2.1.224 gets messages as a new turn through its inbox socket. Older releases: `open-agent-bridge claude --legacy-channels`.",
       "",
       "OpenCode:",
-      "- Configure `.opencode/opencode.json` or `~/.config/opencode/opencode.json` with the open-agent-bridge MCP server entry.",
-      "- Install the plugin once per project: `open-agent-bridge opencode install-plugin --project <path>`.",
-      "- Restart OpenCode; the plugin opens a WS to the registry and delivers messages directly into the active session via prompt_async.",
-      "- Without the plugin, messages still arrive as MCP log entries but the LLM does not see them in real time.",
+      "- Install the plugin once: `open-agent-bridge opencode install-plugin` (project) or `--global`. It registers the MCP server itself; no `opencode.json` edit.",
+      "- Restart OpenCode. On OpenCode 2 the plugin is `<plugins>/open-agent-bridge/{index.ts,tui.ts}`: the server half queues each message in the session you are working in (or in an `open-agent-bridge` session when none is open), and the terminal half opens that session from the home screen or shows a toast when you are in another one.",
+      "",
+      "pi:",
+      "- Install the extension once: `open-agent-bridge pi install-extension` (`--project` for `.pi/extensions/`). It registers the MCP server itself.",
+      "- Restart pi (or `/reload`); messages arrive as a new turn.",
       "",
       "Codex:",
       "- Run `open-agent-bridge init --client codex` once (registers the MCP server in ~/.codex/config.toml), or install the `oab` plugin.",
@@ -241,8 +243,9 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- Headless or codex < 0.162: `open-agent-bridge codex start --project <path>` runs a bridge that owns its own Codex thread.",
       "",
       "Antigravity (`agy`):",
-      "- Run `open-agent-bridge antigravity install-plugin --project <path>` to write the MCP config + Stop/SessionStart hooks, then (re)start `agy` in that workspace.",
-      "- Inbound messages are appended to `.agents/ORIGINAL_REQUEST.md` and the Stop hook makes `agy` continue to read its inbox and reply.",
+      "- Run `open-agent-bridge antigravity install-plugin` once (agy ≥ 1.3: installs the `oab` plugin — MCP server, SessionStart/Stop hooks, skill), then restart `agy`.",
+      "- On the first turn the SessionStart hook asks agy's agent to run `open-agent-bridge antigravity attach` once; only commands agy's agent runs receive the language-server token. After that, messages start a turn in the live conversation (right away when idle, after the running turn otherwise).",
+      "- Not attached yet: messages stay pending and the Stop hook delivers them at the end of the next turn.",
     ].join("\n"),
     send: [
       "# Sending messages",
@@ -428,12 +431,13 @@ export class McpAgentBridge {
           "Tools:\n" +
           "  • agent_bridge_guide(topic='all') — usage guide for setup, sending, replies, ACK states, and troubleshooting.\n" +
           "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
-          "such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, or `[Antigravity inner]`.\n" +
-          "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
+          "such as `[Claude Code]`, `[Codex inner]`, `[OpenCode]`, `[pi]`, or `[Antigravity inner]`.\n" +
+          "  • message_client_session(clientId | project, message) — message a peer (one thread per pair of agents). " +
           "Routing is automatic; for a Codex session pass any agentId from its pair (it registers two — both work).\n" +
           "  • channel_inbox(pendingOnly=true) — list pending conversations; each entry has a `replyWith` block.\n" +
           "  • reply(agentId, conversationId, replyTo, message) — respond to a pending message; " +
           "copy `replyWith` fields verbatim.\n\n" +
+          "Incoming messages arrive as a new turn in your live session; answer them with `reply`. " +
           "OpenCode sessions auto-create channels with all visible peers on startup. " +
           "For workflow patterns, peer-type semantics, and troubleshooting, load the `agent-bridge` skill.",
       },
@@ -1203,14 +1207,14 @@ export class McpAgentBridge {
       {
         description:
           "List all agents and client sessions connected to open-agent-bridge. " +
-          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Antigravity inner]. " +
+          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [OpenCode], [pi], [Antigravity inner]. " +
           "WORKFLOW: call this first to discover targets before using message_client_session. " +
-          "Pass includeClients=true to see Claude/Codex/Antigravity client sessions; bridge daemons are internal and routing to them is automatic.",
+          "Pass includeClients=true to see Claude Code/Codex/OpenCode/pi/Antigravity client sessions; bridge daemons are internal and routing to them is automatic.",
         inputSchema: {
           skill: z.string().optional().describe("Filter agents with this skill (e.g. 'endpoint-find')"),
           project: z.string().optional().describe("Filter by project name or path substring"),
           healthyOnly: z.boolean().optional().describe("Only show healthy agents (default: true)"),
-          includeClients: z.boolean().optional().describe("Include Claude/Codex/Antigravity client sessions that have no HTTP skills (default: false). Set true when looking for a session to message."),
+          includeClients: z.boolean().optional().describe("Include client sessions (Claude Code, Codex, OpenCode, pi, Antigravity) that have no HTTP skills (default: false). Set true when looking for a session to message."),
         },
       },
       async ({ skill, project, healthyOnly = true, includeClients = false }) => {
@@ -1475,19 +1479,22 @@ export class McpAgentBridge {
       "message_client_session",
       {
         description:
-          "Initiate or continue a channel message thread with a client session (Claude Code, Codex, Antigravity). " +
+          "Send a message to a client session (Claude Code, Codex, OpenCode, pi, Antigravity). " +
+          "Each pair of agents shares one thread: a new message continues it. " +
           "USE THIS when you want to proactively send a message or task to another agent. " +
           "DO NOT USE THIS to reply to a pending inbound message — use the reply tool for that instead. " +
           "\n\nWORKFLOW: (1) call list_agents(includeClients=true) to find the target's agentId, " +
           "(2) call message_client_session(clientId=<agentId>, message=<text>). " +
           "Target resolution order when clientId is not provided: " +
           "(a) conversationId participant lookup, (b) project name/path match; " +
-          "when a project has multiple sessions, claude-code > antigravity > codex (override with clientType). " +
-          "\n\nDELIVERY SEMANTICS by target type:" +
-          "\n  • Claude Code  → message is injected as a new turn via Claude Code's inbox socket (fallback: <channel> push event)." +
-          "\n  • OpenCode     → message arrives as a push notification via notifications/opencode/channel." +
-          "\n  • Codex        → message is injected as a new turn into the live Codex session (app-server daemon, codex ≥ 0.162), or by the `oab codex start` bridge into its own thread." +
-          "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +
+          "when a project has multiple sessions, claude-code > opencode > antigravity > codex (override with clientType). " +
+          "\n\nDELIVERY SEMANTICS by target type — every target gets the message as a new turn in its live session:" +
+          "\n  • Claude Code  → through Claude Code's inbox socket (≥ 2.1.224; fallback: <channel> push event)." +
+          "\n  • Codex        → through the app-server daemon into the live TUI (codex ≥ 0.162), or by the `oab codex start` bridge into its own thread." +
+          "\n  • OpenCode     → the plugin queues it in the session in use (OpenCode 2 opens it from the home screen)." +
+          "\n  • pi           → the extension starts a follow-up turn." +
+          "\n  • Antigravity  → through agy's language server once the session ran `open-agent-bridge antigravity attach` (the plugin asks for it); before that, the Stop hook delivers it at the end of the next turn." +
+          "\n  A delivery that fails on Codex/OpenCode/pi/Antigravity stays pending and is retried." +
           "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
           "If omitted, the adapter infers it from the message text." +
           "\n\nROUTING (you do NOT need to know which agentId is the bridge): if you pass an inner " +
@@ -1501,7 +1508,7 @@ export class McpAgentBridge {
           project: z.string().optional().describe("Project name or path substring to resolve the target session. Use when you don't have the exact agentId."),
           clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'opencode', 'codex', or 'antigravity'. Ignored when clientId is set."),
           message: z.string().describe("Message text to send to the target session"),
-          conversationId: z.string().optional().describe("Continue an existing conversation thread by reusing its ID. Leave blank to start a new thread."),
+          conversationId: z.string().optional().describe("Thread to continue. Leave blank to use the thread this pair of agents already shares (it is created on first use)."),
           replyTo: z.string().optional().describe("messageId to thread this message as a reply to (optional, for in-thread continuations)"),
           taskId: z.string().optional().describe("Optional task ID to associate with this conversation"),
           expectsResponse: z.boolean().optional().describe("Set true if you require a reply, false for fire-and-forget. If omitted, the adapter infers it from the message text."),

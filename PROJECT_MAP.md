@@ -4,7 +4,7 @@ Memoria operativa rápida para cargar contexto del repo sin releer toda la docum
 
 ## Qué es
 
-`open-agent-bridge` es un hub local para descubrir agentes por proyecto, enviarles tareas por A2A/JSON-RPC, retransmitir eventos en tiempo real y exponer esa red como herramientas MCP para clientes como Codex, Claude o Gemini.
+`open-agent-bridge` es un hub local para descubrir agentes por proyecto, enviarles tareas por A2A/JSON-RPC, retransmitir eventos en tiempo real y exponer esa red como herramientas MCP para Claude Code, Codex, OpenCode, pi y Antigravity (`agy`).
 
 Tiene dos superficies principales:
 
@@ -106,26 +106,28 @@ Responsabilidades:
 - registrar meta-tools MCP
 - opcionalmente registrar tools por skill/agente
 - gestionar sesiones cliente por channels
-- resolver perfiles de cliente (`Codex`, `Claude`, `Gemini`)
-- soportar flujo inbox-first para clientes no nativos
+- resolver perfiles de cliente (Claude Code, Codex, OpenCode, pi, Antigravity)
+- entregar cada mensaje como turno nuevo en la sesión viva del cliente (`deliverChannelMessage`)
 
 Hotspots:
 
 - `src/mcp/adapter.ts`
 - `src/mcp/config.ts`
-- `src/mcp/proxies/codex-proxy.ts`
-- `src/mcp/proxies/gemini-proxy.ts`
+- `src/client/claude-inbox-socket.ts` (Claude Code ≥ 2.1.224)
+- `src/client/codex-daemon-socket.ts` (Codex ≥ 0.162, app-server daemon)
+- `src/client/host-inbox-socket.ts` + `src/client/opencode-plugin/` + `src/client/pi-extension/` (OpenCode, pi)
+- `src/client/antigravity-ls-client.ts` + `src/cli/commands/antigravity.ts` (agy: `attach` y hooks)
 - `src/client/channel-client-runtime.ts`
-- `src/client/codex-tmux-bridge-service.ts`
-- `src/client/codex-session-files.ts`
 
 Notas reales:
 
 - la capa MCP no es el núcleo, es un adaptador
-- el comportamiento por cliente ya no es Claude-only
-- Codex se trata como cliente inbox-first por defecto
-- para colaborar entre sesiones Codex, el bridge usa un sidecar separado que apunta al pane `tmux` real de la TUI
-- el proxy de Codex queda como fallback/compatibilidad para notificaciones MCP, no como mecanismo de activación principal
+- todos los clientes reciben el mensaje como turno nuevo; cambia la pieza que inicia el turno:
+  - Claude Code: el socket de inbox que exporta a sus procesos hijos;
+  - Codex: el daemon de app-server (`oab codex start` queda para headless o Codex viejo);
+  - OpenCode y pi: su plugin / extensión escucha un socket `inbox-<pid>[-<dirhash>].sock` y el adapter (hijo del agente) escribe ahí;
+  - agy: el agente de agy corre `open-agent-bridge antigravity attach` una vez (el hook SessionStart se lo pide) y el adapter usa el language server con `SendUserCascadeMessage`
+- si la entrega falla en Codex/OpenCode/pi/agy el mensaje queda pendiente y se reintenta
 
 ### 5. Dashboard
 
@@ -180,14 +182,15 @@ Notas reales:
 4. Un cliente puede responder con `reply` o registrar ACKs.
 5. `POST /channel/acks` actualiza el estado visible de entrega.
 
-### Activación de Codex
+### Activación por cliente
 
 1. `channels` sigue siendo transporte + persistencia.
-2. Codex carga MCP desde `.codex/config.toml`.
-3. `mcp start` registra la sesión cliente Codex y escribe `.open-agent-bridge/current-codex-session.json`.
-4. Si la sesión corre dentro de `tmux`, el marker guarda el `TMUX_PANE` activo.
-5. Un sidecar separado `codex tmux-sidecar` vigila mensajes pendientes para ese `clientId`.
-6. Cuando entra un mensaje pendiente, el sidecar inyecta un follow-up en el pane real de Codex para que esa misma sesión use `channel_inbox` y `reply`.
+2. El adapter de cada sesión recibe `channel.message` por WS (o en el sync del registry) y llama a `deliverChannelMessage`.
+3. Arma el prompt con `buildInjectionPrompt` (incluye la llamada a `reply` con los IDs) y lo entrega como turno nuevo:
+   - Claude Code → socket de inbox; Codex → daemon de app-server; OpenCode / pi → socket de inbox del host; agy → language server (tras `attach`).
+4. El ACK `displayed_to_client` sale cuando la entrega se acepta; si falla (Codex/OpenCode/pi/agy), el mensaje queda pendiente.
+5. El agente responde con `reply`, que llega al emisor como turno nuevo.
+6. Legacy: `codex tmux-sidecar` / `oab codex start` siguen para Codex headless o < 0.162.
 
 ## Dónde tocar según el cambio
 

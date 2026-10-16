@@ -1,6 +1,6 @@
 # Referencia del CLI — open-agent-bridge
 
-Referencia completa de la interfaz de línea de comandos de `open-agent-bridge`: el hub local de comunicación entre agentes de IA (Claude Code, OpenCode, Codex, Antigravity) sobre MCP + WebSocket.
+Referencia completa de la interfaz de línea de comandos de `open-agent-bridge`: el hub local de comunicación entre agentes de IA (Claude Code, Codex, OpenCode, pi, Antigravity) sobre MCP + WebSocket.
 
 > El binario se llama `open-agent-bridge`, con el alias corto **`oab`** (idénticos). En esta referencia se usa `oab`. En modo contributor (sin instalación global) el equivalente es `pnpm run dev -- <comando>`.
 
@@ -20,7 +20,7 @@ Referencia completa de la interfaz de línea de comandos de `open-agent-bridge`:
 - [Agentes y mensajería](#agentes-y-mensajería)
   - [`start`](#start) · [`list`](#list) · [`health`](#health) · [`ask`](#ask) · [`find`](#find) · [`delegate`](#delegate) · [`broadcast`](#broadcast) · [`prune`](#prune)
 - [Integraciones de cliente](#integraciones-de-cliente)
-  - [`codex`](#codex) · [`opencode`](#opencode) · [`antigravity`](#antigravity)
+  - [Entrega nativa por cliente](#entrega-nativa-por-cliente) · [`codex`](#codex) · [`opencode`](#opencode) · [`pi`](#pi) · [`antigravity`](#antigravity)
 - [`dashboard`](#dashboard)
 - [Variables de entorno](#variables-de-entorno)
 - [Archivos y estado](#archivos-y-estado)
@@ -53,8 +53,8 @@ pnpm install && pnpm run build:all && npm install -g .
 
 ```bash
 cd /ruta/a/tu/proyecto
-oab init                     # wizard: identity + clientes → .mcp.json + registry
-claude                       # o `codex`: los mensajes llegan como turno nuevo en la sesión viva
+oab init                     # wizard: identity + clientes → .mcp.json + registry + plugins
+claude                       # o codex / opencode / pi / agy: los mensajes llegan como turno nuevo en la sesión viva
 oab doctor                   # confirma la entrega nativa de cada cliente
 oab status                   # estado del hub
 oab down                     # apaga el registry cuando termines
@@ -78,7 +78,7 @@ oab down                     # apaga el registry cuando termines
 
 ### `init`
 
-Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity reusando sus instaladores), registra el MCP en **Codex** vía `codex mcp add` (Codex ignora `.mcp.json` — solo carga servidores desde `~/.codex/config.toml`; el registro es idempotente: hace `remove` antes de `add`), e imprime los próximos pasos por cliente: `claude` y `codex` a secas.
+Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, instala la pieza de cada cliente reusando sus instaladores (OpenCode → `opencode install-plugin --project <proyecto>`; pi → `pi install-extension`; Antigravity → `antigravity install-plugin`), registra el MCP en **Codex** vía `codex mcp add` (Codex ignora `.mcp.json` — solo carga servidores desde `~/.codex/config.toml`; el registro es idempotente: hace `remove` antes de `add`), e imprime los próximos pasos por cliente: `claude`, `codex`, `opencode`, `pi` y `agy` a secas.
 
 `~/.codex/config.toml` es **global**, así que ahí solo va el comando, sin proyecto ni identity: Codex arranca el adapter en el directorio de cada sesión, que ya identifica el proyecto. Una identity distinta de `global` se escribe en el `.codex/config.toml` del proyecto (Codex lo lee si el proyecto es *trusted*). Las versiones anteriores fijaban `AGENT_BRIDGE_PROJECT` en el config global y toda sesión de Codex quedaba registrada como ese proyecto: `oab doctor` lo detecta y volver a correr `oab init --client codex` lo reescribe.
 
@@ -89,7 +89,7 @@ oab init [options]
 | Opción | Default | Descripción |
 | :--- | :--- | :--- |
 | `--identity <id>` | `global` | Namespace de canal. Va a `.mcp.json` y, con Codex, al `.codex/config.toml` del proyecto. |
-| `--client <name>` | `[]` | Cliente a configurar: `claude\|codex\|opencode\|antigravity`. Repetible o separado por comas. |
+| `--client <name>` | `[]` | Cliente a configurar: `claude\|codex\|opencode\|antigravity\|pi`. Repetible o separado por comas. |
 | `--project <path>` | cwd | Proyecto sobre el que operar. |
 | `-p, --port <number>` | `4999` | Puerto del registry. |
 | `--mode <mode>` | auto | Modo de `.mcp.json`: `linked` o `local`. Auto: `linked` si `oab` está en PATH. |
@@ -99,6 +99,7 @@ oab init [options]
 oab init                                       # wizard interactivo
 oab init --yes --identity dev --client claude  # no interactivo
 oab init --yes --client claude,codex --identity ticket-42
+oab init --yes --client opencode,pi,antigravity  # instala plugin de OpenCode, extensión de pi y plugin de agy
 ```
 
 ### `up`
@@ -160,7 +161,7 @@ oab claude --identity ticket-42 --project /ruta/al/proyecto
 
 ### `doctor`
 
-Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`, opcionales). Para Claude Code y Codex además informa si su versión tiene **entrega nativa** (Claude Code ≥ 2.1.224 por el inbox socket; codex ≥ 0.162 por el app-server daemon) o qué fallback usar (`oab claude --legacy-channels` / `oab codex start`). Con Codex en PATH verifica que el MCP esté registrado en `~/.codex/config.toml` (o el plugin `oab`) y marca como fallo un config global que fije `AGENT_BRIDGE_PROJECT`. Termina con un resumen.
+Diagnóstico de entorno (no aborta en el primer fallo): Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`/`pi`, opcionales). Para Claude Code y Codex además informa si su versión tiene **entrega nativa** (Claude Code ≥ 2.1.224 por el inbox socket; codex ≥ 0.162 por el app-server daemon) o qué fallback usar (`oab claude --legacy-channels` / `oab codex start`). Para los clientes cuya entrega necesita una pieza dentro del agente revisa que esté instalada: el plugin de OpenCode (`.opencode/plugins/open-agent-bridge/` o `~/.config/opencode/plugins/open-agent-bridge/`; marca como *outdated* el layout de archivo suelto `agent-bridge.ts` o un directorio sin `tui.ts`), la extensión de pi (`.pi/extensions/` o `~/.pi/agent/extensions/open-agent-bridge.ts`) y el plugin `oab` de agy (vía `agy plugin list --json`). Con Codex en PATH verifica que el MCP esté registrado en `~/.codex/config.toml` (o el plugin `oab`) y marca como fallo un config global que fije `AGENT_BRIDGE_PROJECT`. Termina con un resumen.
 
 ```
 oab doctor [options]
@@ -444,6 +445,22 @@ oab prune ril-scraper        # poda una sesión específica por nombre
 
 ## Integraciones de cliente
 
+### Entrega nativa por cliente
+
+Un setup una vez (`oab init`, o el instalador de cada cliente) y después el comando a secas. Un mensaje de otro agente **arranca un turno nuevo en la sesión viva**; el agente responde con `reply` y puede abrir hilos con `message_client_session`. Verificado en vivo en las dos direcciones con los cinco clientes (2026-10-15).
+
+| Cliente | Versión | Setup | Cómo entra el turno |
+| :--- | :--- | :--- | :--- |
+| Claude Code | ≥ 2.1.224 | `.mcp.json` (`oab init`) | El adapter escribe en el inbox socket de Claude Code (`$CLAUDE_CODE_MESSAGING_SOCKET`). Versiones viejas: `oab claude --legacy-channels`. |
+| Codex | ≥ 0.162 | MCP en `~/.codex/config.toml` (`oab init --client codex`) | El adapter arranca el turno en el thread de la TUI vía el app-server daemon de Codex. Versiones viejas / sin TUI: `oab codex start`. |
+| OpenCode | 2.x (1.x con archivo suelto) | `oab opencode install-plugin` | El plugin del server encola el mensaje (`delivery: "queue"`) en la sesión del usuario; la parte de terminal la abre si estás en el inicio. |
+| pi | ≥ 1.3 | `oab pi install-extension` | La extensión llama `pi.sendMessage(…, { triggerTurn: true, deliverAs: "followUp" })`. pi necesita un modelo (`/login`). |
+| Antigravity (`agy`) | ≥ 1.3 | `oab antigravity install-plugin` | El adapter llama `SendUserCascadeMessage` (`WHEN_IDLE`) en la conversación que registró `antigravity attach`. |
+
+**Host inbox sockets (OpenCode y pi).** Su API para arrancar un turno solo existe dentro de su propio proceso, así que la pieza instalada (plugin / extensión) escucha en `${XDG_RUNTIME_DIR:-$TMPDIR}/open-agent-bridge/inbox-<pid>.sock` (directorio 0700, socket 0600; en OpenCode `inbox-<pid>-<sha256(dir)[:12]>.sock`, porque un server atiende varios proyectos). El adapter MCP es hijo del agente, lo encuentra por `process.ppid` y escribe NDJSON `{"type":"user","id":<messageId>,"message":{"role":"user","content":…}}`. Los listeners descartan un `id` repetido (últimos 500): dos adapters en el mismo agente o un replay del registry arrancan un solo turno. El token de mensajería de Claude Code nunca se reenvía a estos sockets.
+
+**Si la entrega falla** (agente cerrado, socket ausente, RPC rechazado): en Codex, OpenCode, pi y agy el mensaje queda pendiente y lo reintenta el sync del registry — no hay ack falso. Claude Code cae a la notificación de canal.
+
 ### `codex`
 
 Utilidades específicas de Codex. Con codex ≥ 0.162 **no hacen falta**: `codex` a secas recibe los mensajes como turno nuevo en la TUI viva (el adapter MCP los entrega por el app-server daemon de Codex). Estos comandos quedan para Codex sin TUI (*headless*) o versiones anteriores: un bridge propio inyecta los mensajes en su thread vía `turn/start` y reenvía la respuesta final.
@@ -505,32 +522,57 @@ Corre un sidecar por sesión que inyecta los follow-ups pendientes del canal en 
 
 #### `opencode install-plugin`
 
-Instala el plugin de open-agent-bridge en un proyecto OpenCode (o global). El plugin abre un WebSocket al registry y entrega los mensajes de canal directo en la sesión activa vía `session.prompt_async` (push en tiempo real). Los plugins locales en `.opencode/plugins/` se auto-cargan; reiniciá OpenCode tras instalar.
+Instala el plugin de open-agent-bridge en un proyecto OpenCode (o global). Los plugins locales se auto-cargan; reiniciá OpenCode tras instalar (el server `opencode serve --service` recarga el plugin solo cuando cambia el archivo).
+
+- **OpenCode 2.x** — escribe `<plugins>/open-agent-bridge/index.ts` (server) + `tui.ts` (terminal) y borra el `agent-bridge.ts` suelto de versiones anteriores (se cargaría dos veces). La mitad del server registra el MCP por su cuenta (`ctx.mcp.transform`, sin tocar `opencode.json`), abre el host inbox socket y encola cada mensaje (`delivery: "queue"`, nunca `steer`) en la sesión activa del proyecto, o en una sesión propia "open-agent-bridge" si la terminal está en la pantalla de inicio. La mitad de terminal escucha `session.inbox.enqueued`: en el inicio abre esa sesión; en otra sesión muestra un toast (este caso no está verificado en vivo).
+- **OpenCode 1.x** — detectado con `opencode --version`: copia el archivo suelto `agent-bridge.ts` (OpenCode 1 no tiene plugins de terminal).
 
 | Opción | Default | Descripción |
 | :--- | :--- | :--- |
-| `--project <path>` | cwd | Proyecto. |
+| `--project <path>` | cwd | Proyecto (`<project>/.opencode/plugins/`). |
 | `--global` | — | Instala en `~/.config/opencode/plugins/` en lugar del proyecto. |
+
+### `pi`
+
+#### `pi install-extension`
+
+Instala la extensión de open-agent-bridge para pi ≥ 1.3 (`@earendil-works/pi-coding-agent`). La extensión registra el MCP (`pi.registerMcpServer`), abre el host inbox socket `inbox-<piPid>.sock` al iniciar la sesión y convierte cada mensaje en un turno con `pi.sendMessage(…, { triggerTurn: true, deliverAs: "followUp" })`. pi necesita un modelo configurado (`/login`) para responder.
+
+```
+oab pi install-extension [--project <path>]
+```
+
+| Opción | Default | Descripción |
+| :--- | :--- | :--- |
+| `--project <path>` | — | Instala en `<path>/.pi/extensions/` (pi pide confiar en el proyecto) en lugar de `~/.pi/agent/extensions/open-agent-bridge.ts`. |
 
 ### `antigravity`
 
-Integración con la CLI de Google Antigravity (`agy`): canales nativos vía MCP + hooks.
+Integración con la CLI de Google Antigravity (`agy` ≥ 1.3): MCP + hooks del plugin + `attach` para la entrega en vivo.
+
+**Por qué hay un `attach`.** El language server de agy puede arrancar un turno en la conversación viva (`SendUserCascadeMessage`), pero solo acepta RPCs con un token CSRF que agy entrega a los comandos que corre **su propio agente** — no a los servidores MCP ni a los hooks (los hooks solo reciben `ANTIGRAVITY_CONVERSATION_ID`). El CLI `agy` tampoco corre sidecars (eso es del Antigravity app). Por eso el hook `SessionStart` le pide al agente que corra `open-agent-bridge antigravity attach` una vez por proceso de agy; de ahí en adelante todo es automático.
 
 #### `antigravity install-plugin`
 
-Escribe la config MCP de open-agent-bridge + hooks de ciclo de vida para que `agy` entregue mensajes de canal automáticamente (Stop hook con auto-continue).
+Corre `agy plugin install <repo>/plugins/open-agent-bridge`: el plugin `oab` compartido (el mismo que instalan Claude Code y Codex) trae para agy `plugin.json`, `mcp_config.json` (servidor `open-agent-bridge`), `hooks.json` en la raíz (`SessionStart` + `Stop`), el skill y los comandos. Borra el directorio viejo `~/.gemini/config/sidecars/open-agent-bridge`. Sin opciones; reiniciá `agy` después.
 
-| Opción | Default | Descripción |
-| :--- | :--- | :--- |
-| `--project <path>` | cwd | Workspace donde instalar. |
-| `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
-| `--bridge-command <cmd>` | `open-agent-bridge` | Ejecutable de open-agent-bridge. |
-| `--identity <id>` | `global` | Namespace de canal. |
-| `--global` | — | Instala en `~/.gemini/antigravity-cli` en lugar del `.agents/` del workspace. |
+```
+oab antigravity install-plugin
+```
 
-#### `antigravity ls-push`
+Si quedó una entrada vieja en `.agents/mcp_config.json` (p. ej. un servidor `agent-bridge` de instalaciones anteriores), agy levanta un segundo adapter al lado del del plugin: borrala.
 
-Auto-entrega mensajes de canal a una TUI de `agy` **viva** vía su Cascade Language Server (`SendUserCascadeMessage`) — sin tmux ni "check inbox" manual. Requiere `agy` corriendo con una conversación abierta en el workspace.
+#### `antigravity attach`
+
+Lo corre el agente de agy desde su terminal (se lo pide el hook `SessionStart`; la primera vez agy puede pedir permiso). Guarda la dirección del language server, el token y la conversación en `$XDG_RUNTIME_DIR/open-agent-bridge/agy-<agyPid>.json` (0600 en un directorio 0700). El adapter MCP, hijo directo de agy, lo lee por `process.ppid` y entrega cada mensaje con `SendUserCascadeMessage` (`AGENT_MESSAGE_ORIGIN_SDK_EXECUTABLE`, `MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE`: turno inmediato si agy está quieto, después del turno en curso si no), reusando el `cascadeConfig` y el agente del último mensaje del usuario (`GetCascadeTrajectory`) — sin un plan model agy rechaza el turno (`plan model not specified`), y así se mantiene el modelo que eligió el usuario. Sale con código ≠ 0 si le falta la dirección/token (no se corrió desde agy).
+
+```
+oab antigravity attach
+```
+
+#### `antigravity ls-push` (legacy)
+
+**No funciona con agy ≥ 1.3**: el language server rechaza los RPCs sin token CSRF (`401 missing CSRF token`). Queda para versiones anteriores de agy; con 1.3 la entrega en vivo la hace el adapter tras `attach`.
 
 | Opción | Default | Descripción |
 | :--- | :--- | :--- |
@@ -545,7 +587,12 @@ Auto-entrega mensajes de canal a una TUI de `agy` **viva** vía su Cascade Langu
 
 #### `antigravity hook-stop` / `antigravity hook-session-start`
 
-Hooks que `install-plugin` cablea (normalmente no se invocan a mano). `hook-stop` entrega pendientes y fuerza a `agy` a continuar; `hook-session-start` surfacea pendientes como contexto. Opciones comunes: `--project` (cwd), `--registry-url` (`http://localhost:4999`), `--client-id`, `--identity` (`global`).
+Hooks del `hooks.json` del plugin (normalmente no se invocan a mano). agy los corre con `sh -c` desde el directorio del plugin, así que el proyecto sale de `workspacePaths` del payload. Los dos refrescan la conversación de `agy-<pid>.json` con el token ya guardado (siguen `/new` y los resumes).
+
+- `hook-session-start` — devuelve `injectSteps`: le pide al agente que corra `attach` si todavía no se corrió, y avisa cuántos mensajes hay pendientes.
+- `hook-stop` — si hay mensajes pendientes devuelve `{"decision":"continue","reason":…}` para que agy siga y los conteste (agy 1.3 ignora `"block"`). Es el respaldo cuando no hubo `attach` (el adapter deja esos mensajes pendientes): entran al terminar el turno.
+
+Opciones comunes: `--project` (default: el workspace del hook), `--registry-url` (`http://localhost:4999`), `--client-id`, `--identity` (`global`).
 
 ---
 
@@ -586,6 +633,8 @@ Todo el estado de runtime vive en `.open-agent-bridge/` dentro del proyecto (git
 | `~/.open-agent-bridge/registry.sqlite` | Conversaciones, mensajes y ACKs del canal. **Por usuario** (homedir), independiente del cwd del registry. |
 | `.open-agent-bridge/registry.log` | stdout/stderr del daemon. |
 | `.mcp.json` | Config del cliente MCP (en la raíz del proyecto). Generado por `oab init` / `oab mcp config`. |
+| `$XDG_RUNTIME_DIR/open-agent-bridge/inbox-<pid>[-<dirhash>].sock` | Host inbox sockets de OpenCode y pi (0600; directorio 0700). Los crea el plugin / la extensión y se borran al salir. |
+| `$XDG_RUNTIME_DIR/open-agent-bridge/agy-<pid>.json` | Conversación viva de agy + dirección y token del language server (0600). Lo escribe `antigravity attach`; lo refrescan los hooks. |
 
 > Como el SQLite y el PID dependen del cwd, arrancá siempre el registry desde la misma raíz de proyecto para que `up`/`down`/`status` sean coherentes.
 
@@ -648,6 +697,11 @@ oab down && oab up
 | Codex se registra con el proyecto equivocado (`oab list`) | Un `oab init` viejo fijó `AGENT_BRIDGE_PROJECT` en `~/.codex/config.toml` (`oab doctor` lo marca). Corré `oab init --client codex` y abrí una sesión nueva de Codex: el daemon levanta un adapter por thread, así que cerrar la TUI no recarga el config de los threads viejos. |
 | Un mensaje a Codex no aparece en la TUI | `oab doctor` debe mostrar `client: codex (native push)` en verde (codex ≥ 0.162). Si había otra TUI de Codex abierta en el mismo proyecto, recibe la más nueva. Para versiones viejas usá `oab codex start`. |
 | `.mcp.json` con ruta absoluta de otra máquina | Regeneralo: `oab mcp config --write` (modo `linked`) usa el binario por nombre, sin rutas frágiles. |
+| OpenCode responde pero el mensaje no se ve en la terminal | Plugin sin la mitad de terminal (`oab doctor` lo marca *outdated*). Corré `oab opencode install-plugin` y reiniciá OpenCode. |
+| pi recibe el mensaje pero no contesta | pi no tiene modelo: `/login` en pi. |
+| agy no recibe en vivo (solo al terminar un turno) | No se corrió `attach` en ese proceso de agy: pedile que corra `open-agent-bridge antigravity attach` (o aprobá el permiso). El log de agy (`~/.gemini/antigravity-cli/log/`) muestra `live delivery off — missing …`. |
+| agy: `plan model not specified` en el turno inyectado | Versión vieja del adapter sin `cascadeConfig`. Actualizá `oab` y reiniciá agy. |
+| agy aparece dos veces en `list_agents` | Un `.agents/mcp_config.json` viejo levanta un segundo adapter. Borrá esa entrada; el plugin ya registra el MCP. |
 
 ---
 

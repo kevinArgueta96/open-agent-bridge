@@ -208,9 +208,9 @@ export function registerAntigravityCommand(program: Command): void {
   antigravity
     .command("ls-push")
     .description(
-      "Auto-deliver channel messages into a LIVE agy TUI via its Cascade Language " +
-        "Server (SendUserCascadeMessage) — no tmux, no manual 'check inbox'. Requires " +
-        "agy running with an open conversation in the workspace.",
+      "Legacy (agy < 1.3): poll the registry and deliver into a live agy TUI via its " +
+        "language server. agy ≥ 1.3 refuses these calls without its CSRF token; use " +
+        "`install-plugin` + `attach` instead.",
     )
     .option("--project <path>", "Workspace path", process.cwd())
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")

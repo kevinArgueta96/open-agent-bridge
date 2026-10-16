@@ -1,163 +1,82 @@
-# Plan de Integración: Antigravity CLI (`agy`) — reemplazo TOTAL de la capa Gemini
+# Integración: Antigravity CLI (`agy`)
 
-> Objetivo: **eliminar por completo** la integración de Gemini CLI y sustituirla por Antigravity CLI (`agy`), usando **únicamente los patrones nativos** del CLI. Sin ACP. Sin tmux como pieza central.
-
-Este plan está fundamentado en inspección **directa del binario instalado** (`/home/kevin-osigu/.local/bin/agy`) y de su estado en disco (`~/.gemini/antigravity-cli/`), no en suposiciones.
+Cómo recibe y envía mensajes `agy` ≥ 1.3 a través de open-agent-bridge. Verificado en vivo con `agy` 1.3.4 (2026-10-15): un mensaje enviado desde Claude Code arranca un turno nuevo en una sesión de `agy` quieta, `agy` contesta con `reply` y abre hilos propios con `message_client_session`.
 
 ---
 
-## 1. El corazón del CLI — qué expone realmente `agy`
+## 1. Setup
 
-### 1.1 Superficie de comandos real (build instalado)
-```
-Flags:  --add-dir  -c/--continue  --conversation <id>
-        --dangerously-skip-permissions  -i/--prompt-interactive
-        --log-file  -p/--print (=--prompt)  --print-timeout (5m)  --sandbox
-Subcmds: changelog  help  install  plugin/plugins  update
-```
-- **No existe** `--output-format`, ni `stream-json`, ni `--input-format`, ni modo servidor/daemon, ni JSON-RPC de cara al agente.
-- `agy -p "prompt"` = una sola pasada **en texto plano** y termina.
-- `agy plugin import [gemini|claude]` → **importa plugins en formato gemini o claude** (skills, agents, rules, MCP, hooks). `install` soporta `plugin@marketplace`.
-
-### 1.2 PATRÓN NATIVO #1 — el "JSON-RPC" de `agy` **es MCP**
-La tabla de símbolos del binario muestra `jsonrpc2` usado **solo** como transporte de MCP:
-`map[jsonrpc2.ID]*mcp.msgBatch`, `jsonrpc2.AsyncCall`, `jsonrpc2.Message`.
-→ **No hay servidor JSON-RPC/ACP/socket donde "empujar" prompts.** `agy` actúa como **cliente MCP**.
-**Conclusión:** la forma correcta de exponer el patrón de *channels* es como **servidor MCP** al que `agy` se conecta. Ese es el único "JSON-RPC" nativo.
-
-### 1.3 PATRÓN NATIVO #2 — coordinación multi-agente vía filesystem `.agents/`
-El binario contiene **sus propias instrucciones de harness** (extraídas con `strings`):
-> *"If you received a NEW message this turn (from user or parent agent), append it to `.agents/ORIGINAL_REQUEST.md` with a UTC timestamp header (e.g. `## 2026-04-17T15:00:00Z`)… dedup by last timestamp header."*
-> *"…append it to `.agents/<your_folder>/ORIGINAL_REQUEST.md`…"*
-> *"Create working directories under `.agents/` for each planned subagent."*
-
-→ Antigravity ya pasa mensajes **padre→hijo por archivos** en `.agents/`. Es el mecanismo nativo de "llegada de mensajes". (Linaje Codeium/Windsurf: protos `cortex_pb`, `jetski_cortex_pb`, `codeium_common_pb`, `AgentStateUpdate`.)
-**Conclusión:** un mensaje entrante del canal se entrega de forma nativa **anexándolo a `.agents/ORIGINAL_REQUEST.md`** con cabecera de timestamp; el agente lo recoge como "nuevo mensaje del agente padre" en su siguiente turno.
-
-### 1.4 PATRÓN NATIVO #3 — hooks de ciclo de vida (auto-continuación)
-Eventos: `SessionStart/SessionEnd`, `UserPromptSubmit/Stop/StopFailure`, `PreToolUse/PostToolUse`. Contrato stdin/stdout JSON (camelCase).
-El **hook `Stop`** puede devolver `{"decision":"block","reason":"<texto>"}` → **fuerza al agente a continuar** con ese texto. Es el disparador de "auto-arrival".
-
-### 1.5 Estado en disco (`~/.gemini/antigravity-cli/`)
-| Ruta | Contenido |
-|---|---|
-| `conversations/<uuid>.pb` | Conversaciones en **protobuf** (no SQLite en este build). |
-| `history.jsonl` | Índice: `{display, timestamp, workspace, conversationId}` → mapea workspace ↔ conversationId. |
-| `brain/<conversationId>/` | Artefactos: `task.md`, `implementation_plan.md`, `walkthrough.md` (+ `.metadata.json`, `.resolved.N`). |
-| `implicit/<uuid>.pb` | Contexto implícito. |
-| `settings.json` | `model`, `trustedWorkspaces`, `statusLine.command` (recibe metadata del agente por stdin). |
-| `knowledge/` | Base de conocimiento. |
-| `mcp_config.json` | Config MCP (global aquí; por workspace en `.agents/mcp_config.json`). |
-
----
-
-## 2. Diseño de la integración de *channels* (100% nativo)
-
-```
-            open-agent-bridge (registry + canal)
-                      │  (servidor MCP: list_agents, channel_inbox, reply, message_client_session)
-                      ▼
-        ┌──────────────────────────── agy (cliente MCP) ────────────────────────────┐
-  IN →  │  (A) append .agents/ORIGINAL_REQUEST.md  +  (D) Stop hook decision:block    │
-  OUT ← │  el agente llama reply()/message_client_session() vía MCP                   │
-        └────────────────────────────────────────────────────────────────────────────┘
-  Push externo sin sesión viva:  agy -p --conversation <id-de-history.jsonl>
-  Último recurso (TUI viva):      tmux send-keys
+```bash
+oab antigravity install-plugin   # o: oab init --client antigravity
+agy                              # reiniciá agy si ya estaba abierto
 ```
 
-### 2.1 Entrada (canal → `agy`) — "llegar automáticamente"
-1. **Append a `.agents/ORIGINAL_REQUEST.md`** del workspace: el mensaje del canal con cabecera `## <UTC>` + remitente + conversationId. (Mecanismo nativo del harness.)
-2. **Hook `Stop`**: al terminar el turno, consulta el registry; si hay pendientes para este agente, devuelve `{"decision":"block","reason": "<resumen + 'revisa .agents/ORIGINAL_REQUEST.md y responde con channel reply'>"}` → `agy` continúa solo.
-3. **Hook `SessionStart`**: registra la sesión `agy` como cliente en el registry y drena backlog.
-
-### 2.2 Salida (`agy` → canal)
-El agente usa directamente las tools MCP `reply` / `message_client_session`. Sin scraping ni parsing de stdout.
-
-### 2.3 Push desde un daemon sin sesión interactiva — **VALIDADO en vivo**
-Pruebas reales sobre el binario instalado:
-
-| Modo | STDOUT | Veredicto |
-|---|---|---|
-| `agy -p "<msg>"` (conversación **nueva**) | **Limpio**: solo la respuesta nueva, exit 0. No pide permisos para prompts de solo texto. | ✅ Usar para el relay |
-| `agy -p "<msg>" --conversation <id>` | `Info:` + **replay completo del transcript** previo + respuesta nueva al final | ❌ Difícil de relayar |
-| `--dangerously-skip-permissions` | Bloqueado por el clasificador auto-mode de Claude Code | ❌ Evitar; innecesario |
-
-**Decisión:** el daemon usa **conversación nueva por mensaje entrante** (stdout trivialmente relayable). La continuidad de hilo se lleva por el archivo nativo `.agents/ORIGINAL_REQUEST.md` + contexto embebido en el prompt — **no** por `--conversation`. El `conversationId` de `history.jsonl` solo se usaría si alguna vez se requiere continuidad por `--conversation`.
-
-### 2.4 Último recurso
-`tmux send-keys` para "despertar" un pane TUI vivo y ocioso. Solo fallback.
-
----
-
-## 3. Empaquetado: un **plugin de Antigravity** instalable
-
-Distribuir todo como un plugin (importable con `agy plugin import claude` o instalable):
-```
-open-agent-bridge-plugin/
-├── mcp_config.json     # registra open-agent-bridge como servidor MCP
-├── hooks.json          # Stop → hook-stop ; SessionStart → hook-session-start
-└── hooks/
-    ├── stop.sh         # → agent-bridge antigravity hook-stop
-    └── session-start.sh# → agent-bridge antigravity hook-session-start
-```
-`mcp_config.json` (servidor local stdio; remoto usaría `serverUrl`):
-```json
-{ "mcpServers": { "agent-bridge": { "command": "agent-bridge", "args": ["mcp"] } } }
-```
-
----
-
-## 4. Borrado de la capa Gemini (eliminación total)
-
-| Archivo Gemini | Acción |
-|---|---|
-| `src/client/gemini-acp-bridge.ts` | **Eliminar** |
-| `src/client/gemini-acp-client.ts` | **Eliminar** |
-| `src/client/gemini-tmux-bridge-service.ts` | **Eliminar** (se reimplementa solo el nudge mínimo si se necesita) |
-| `src/client/gemini-runtime-discovery.ts` | **Eliminar** |
-| `src/client/gemini-session-files.ts` | **Eliminar** |
-| `src/client/profiles/gemini-client-profile.ts` | **Eliminar** |
-| `src/cli/commands/gemini.ts` | **Eliminar** |
-| `src/client/client-profile-resolver.ts` | **Editar**: quitar rama `gemini`/`gemini-cli`, añadir `antigravity`/`agy`. |
-| `src/cli/index.ts` | **Editar**: `registerGeminiCommand` → `registerAntigravityCommand`. |
-
-> Verificar callers con codegraph antes de borrar (`codegraph_impact` sobre cada símbolo) para no romper `index.ts` ni el resolver.
-
-## 5. Archivos nuevos (capa Antigravity)
+`install-plugin` corre `agy plugin install <repo>/plugins/open-agent-bridge`. Es el mismo plugin compartido que instalan Claude Code y Codex (`oab`); para `agy` aporta:
 
 | Archivo | Rol |
 |---|---|
-| `src/client/profiles/antigravity-client-profile.ts` | `id="antigravity"`, `deliveryMode="inbox-first"`; mapea mensajes del canal. |
-| `src/client/antigravity-runtime-discovery.ts` | Detecta binario `agy`, versión, `~/.gemini/antigravity-cli/`. |
-| `src/client/antigravity-history.ts` | Lee `history.jsonl`, resuelve `conversationId` por workspace. |
-| `src/client/antigravity-agents-file.ts` | Append/dedup en `.agents/ORIGINAL_REQUEST.md` (cabeceras UTC). |
-| `src/client/antigravity-hooks.ts` | Handlers `Stop` / `SessionStart` (stdin/stdout JSON). |
-| `src/client/antigravity-headless-bridge.ts` | Daemon push: `agy -p --conversation <id>` + relay. |
-| `src/cli/commands/antigravity.ts` | `install-plugin`, `hook-stop`, `hook-session-start`, `start`. |
-| `plugin/` (mcp_config.json, hooks.json, hooks/*) | Plugin instalable en `agy`. |
+| `plugin.json` | Marca el directorio como plugin nativo de agy. |
+| `mcp_config.json` | Servidor MCP `open-agent-bridge` (`open-agent-bridge mcp start`). |
+| `hooks.json` (raíz) | `SessionStart` → `open-agent-bridge antigravity hook-session-start`; `Stop` → `open-agent-bridge antigravity hook-stop`. agy solo carga `hooks.json` de la raíz en plugins nativos. |
+| `skills/`, `commands/` | Skill `agent-bridge`; los comandos se convierten en skills. |
 
-## 6. Secuencia de construcción
+También borra `~/.gemini/config/sidecars/open-agent-bridge` (instalaciones anteriores). Si queda una entrada vieja en `.agents/mcp_config.json` (p. ej. un servidor `agent-bridge` con `--project` fijo), agy levanta un segundo adapter: borrala. `oab doctor` verifica el plugin con `agy plugin list --json`.
 
-1. `antigravity-runtime-discovery.ts` + `antigravity-history.ts` + tests (parsean disco real).
-2. `AntigravityClientProfile` + registro en resolver; quitar Gemini del resolver.
-3. **Servidor MCP**: confirmar/añadir comando `agent-bridge mcp` y plantilla `mcp_config.json`.
-4. `antigravity-agents-file.ts` (append/dedup `.agents/ORIGINAL_REQUEST.md`) + tests.
-5. `antigravity-hooks.ts` + comandos `hook-stop`/`hook-session-start` + `hooks.json` + tests del contrato.
-6. `antigravity-headless-bridge.ts` (push vía `--conversation`).
-7. CLI `antigravity.ts` (`install-plugin`, `start`) + registro en `cli/index.ts`; **eliminar** archivos Gemini.
-8. E2E: instalar plugin → abrir `agy` en un workspace → enviar mensaje desde Claude/Codex → confirmar append en `.agents/ORIGINAL_REQUEST.md`, continuación por Stop hook y respuesta por `reply`.
-9. README: retiro de Gemini, alta de Antigravity, fecha límite Gemini CLI (2026-06-18).
+## 2. Entrega en vivo: `attach`
 
-## 7. Riesgos / pendientes de verificar
-- Confirmar la **ruta exacta** que `agy` lee para `mcp_config.json` y `hooks.json` (global `~/.gemini/antigravity-cli/` vs workspace `.agents/`).
-- Confirmar que `agy -p --conversation <id>` reanuda de forma fiable y que stdout es la respuesta limpia del agente (sin envoltura TUI).
-- El formato `.pb` (protobuf, esquemas `cortex_pb`) es interno y puede cambiar entre versiones → **no** parsear `.pb` directamente; usar `history.jsonl` (estable) + comandos `agy`.
-- Confirmar nombre exacto del schema de `hooks.json` (claves de eventos) y campos del Stop hook (`decision`/`reason`/`hookSpecificOutput.additionalContext`).
-- `agy plugin import claude`: validar qué subconjunto del formato Claude (skills/hooks/MCP) se importa intacto.
+El language server de agy puede arrancar un turno en la conversación viva con `SendUserCascadeMessage`, pero solo acepta RPCs con un token CSRF (`x-codeium-csrf-token`). agy entrega la dirección y el token (`ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`) **solo a los comandos que corre su propio agente**:
+
+| Proceso | Recibe dirección + token |
+|---|---|
+| Servidor MCP (el adapter) | No |
+| Hooks | No — solo `ANTIGRAVITY_CONVERSATION_ID` |
+| Comandos del agente (`run_command`) | Sí |
+| Sidecars | El CLI `agy` no los corre (son del Antigravity app) |
+
+Por eso:
+
+1. En el primer turno de cada sesión, el hook `SessionStart` devuelve `injectSteps` pidiéndole al agente que corra `open-agent-bridge antigravity attach` (la primera vez agy puede pedir permiso).
+2. `attach` guarda dirección, token y conversación en `$XDG_RUNTIME_DIR/open-agent-bridge/agy-<pidDeAgy>.json` (0600, directorio 0700). Busca el pid de agy subiendo por los ancestros y saltando shells.
+3. Cada hook posterior reescribe la conversación con el token ya guardado, así el archivo sigue `/new` y los resumes. Basta un `attach` por proceso de agy.
+4. El adapter MCP es hijo directo de agy: lee `agy-<process.ppid>.json` y entrega cada mensaje con `SendUserCascadeMessage`:
+   - `messageOrigin: AGENT_MESSAGE_ORIGIN_SDK_EXECUTABLE`;
+   - `deliveryStrategy: MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE` — turno inmediato si agy está quieto, después del turno en curso si no;
+   - `cascadeConfig` y `customAgentSpec` copiados del último mensaje del usuario (`GetCascadeTrajectory`). Sin un plan model agy rechaza el turno (`plan model not specified`); así además se respeta el modelo que eligió el usuario.
+5. Si el RPC falla, el mensaje queda pendiente (sin ack) y lo reintenta el sync del registry.
+
+Si falta alguna pieza, el hook escribe en stderr (agy lo copia a `~/.gemini/antigravity-cli/log/`) `[antigravity] live delivery off — missing …`, con nombres de variables, nunca valores.
+
+## 3. Sin `attach`
+
+Antes del primer turno, o si no se aprobó el comando, el adapter no tiene la conversación: deja el mensaje pendiente, sin ack ni notificación (agy no las muestra). Lo entrega el hook `Stop` al terminar el próximo turno, o el sync del registry en cuanto el agente corra `attach`.
+
+## 4. Hooks (contrato de agy 1.3)
+
+- Se ejecutan con `sh -c` y con el directorio del plugin como cwd: el proyecto sale de `workspacePaths` del payload (o `--project`).
+- `hook-stop` — si hay mensajes pendientes para esta sesión devuelve `{"decision":"continue","reason":"…"}` y agy sigue trabajando para contestarlos (agy 1.3 ignora `"block"`). También los anexa a `.agents/ORIGINAL_REQUEST.md`.
+- `hook-session-start` — devuelve `{"injectSteps":[{"systemMessage":{"systemMessage":"…"}}]}` con la instrucción de `attach` (si hace falta) y el número de mensajes pendientes.
+- Opciones comunes: `--project`, `--registry-url` (`http://localhost:4999`), `--client-id`, `--identity` (`global`).
+
+## 5. Salida (`agy` → canal)
+
+El agente usa las tools MCP `reply` y `message_client_session`. `message_client_session` reusa un hilo por par de agentes (id determinístico) salvo que se pase `conversationId`.
+
+## 6. Enfoques descartados
+
+| Enfoque | Por qué no |
+|---|---|
+| `antigravity ls-push` (polling + `SendUserCascadeMessage` sin token) | agy ≥ 1.3 responde `401 missing CSRF token`. Queda solo para versiones anteriores. |
+| Sidecar en `~/.gemini/config/sidecars/` o dentro del plugin | El CLI `agy` no ejecuta sidecars, ni siquiera habilitados en `~/.gemini/config/config.json`. |
+| Stop hook con `{"decision":"block"}` | agy 1.3 lo ignora; el valor válido es `"continue"`. |
+| `agy -p --conversation <id>` desde un daemon | Reproduce el transcript completo en stdout y no entra en la TUI viva. |
+| `tmux send-keys` | Depende del multiplexor y escribe en la terminal del usuario. |
+
+## 7. Pendiente / sin verificar
+
+- `--identity` con agy: el plugin registra el MCP sin identity (namespace `global`); cómo fijar una identity por sesión no está verificado.
 
 ## 8. Fuentes
-- Inspección directa: `agy --help`, `~/.gemini/antigravity-cli/` (este equipo).
-- [Antigravity Hooks](https://antigravity.google/docs/hooks) · [Using AGY CLI](https://antigravity.google/docs/cli-using) · [CLI Features](https://antigravity.google/docs/cli-features) · [MCP](https://antigravity.google/docs/mcp)
-- [Transición Gemini CLI → Antigravity CLI](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/)
-- [Repo oficial google-antigravity/antigravity-cli](https://github.com/google-antigravity/antigravity-cli) · [Herramienta no oficial (brain/artifacts)](https://github.com/michaelw9999/antigravity-cli)
-- [Deep dive — agentpedia](https://agentpedia.codes/blog/antigravity-cli-deep-dive) · [DataCamp](https://www.datacamp.com/tutorial/antigravity-cli)
+
+- Documentación embebida de agy: `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/{hooks,plugins}.md` y el skill `plugin` (uso de `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN`).
+- [Antigravity Sidecars](https://antigravity.google/docs/sidecars) · [Hooks](https://antigravity.google/docs/hooks) · [MCP](https://antigravity.google/docs/mcp) · [Using AGY CLI](https://antigravity.google/docs/cli-using)
+- Código: `src/cli/commands/antigravity.ts`, `src/client/antigravity-ls-client.ts`, `src/client/antigravity-hooks.ts`, `src/mcp/adapter.ts` (`deliverChannelMessage`), `plugins/open-agent-bridge/hooks.json`.

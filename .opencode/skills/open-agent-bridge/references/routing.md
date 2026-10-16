@@ -13,30 +13,21 @@ When you call `message_client_session`, the adapter resolves the best target in 
 
 ```
 Priority -1 (highest): bridge daemons
-  clientVersion === "app-server-bridge"   (Codex)
-  clientVersion === "acp-bridge"          (Gemini)
-  clientVersion === "opencode-plugin-bridge" (OpenCode)
+  clientVersion === "app-server-bridge"       (Codex, `oab codex start`)
+  clientVersion === "opencode-plugin-bridge"  (legacy OpenCode 1 plugin)
 
 Priority 0–N (by position):
-  "claude-code", "claude", "opencode", "gemini-cli", "gemini", "codex-cli", "codex"
+  "claude-code", "claude", "opencode", "antigravity", "agy", "codex-cli", "codex"
+  anything else (e.g. pi) sorts last
 ```
 
-Bridge daemons always win over inner MCP clients in the same project. This is intentional: bridge daemons can inject turns directly; inner MCP clients can only pull from `channel_inbox`.
+Bridge daemons win over inner MCP clients in the same project. Pass `clientId` (or `clientType`) to pick a specific session.
 
 ## Auto-redirect for inner clients
 
-When `reply` or `message_client_session` targets a Codex inner client (`client-codex-mcp-client-*`) or Gemini inner client (`client-gemini-mcp-client-*`), the adapter automatically redirects to the bridge daemon for the same project. You do not need to look up the bridge agentId manually.
+When a Codex session has an `oab codex start` bridge, sending to its inner client (`client-codex-mcp-client-*`) is redirected to the bridge for the same project. Without a bridge, the inner client is the target and the message starts a turn in the live TUI through Codex's app-server daemon.
 
-This means: copy `replyWith.agentId` verbatim even if it looks like an inner client — the adapter handles the redirect.
-
-## OpenCode dual registration
-
-OpenCode registers two entries per session:
-
-- `client-opencode-*` — MCP client (calls tools, can use `channel_inbox` and `reply`)
-- `client-opencode-bridge-*` — plugin bridge (receives push injections)
-
-When you send to the MCP client, the adapter routes to the plugin bridge if it is present and healthy. The MCP client row stays visible in `list_agents` so the LLM can still call tools.
+Copy `replyWith.agentId` verbatim even if it looks like an inner client — the adapter handles the redirect.
 
 ## Conversation ID is deterministic
 
@@ -48,6 +39,7 @@ SHA1(sorted([agentIdA, agentIdB])).slice(0, 32) → formatted as UUID
 
 This means:
 - Both sides always land in the same thread without pre-coordination.
+- `message_client_session` without a `conversationId` continues that thread; it does not open a new one.
 - The ID is stable across registry restarts.
 - If two agents initiate simultaneously, both messages arrive in the same thread.
 
@@ -58,7 +50,7 @@ When a project has multiple sessions of different types, use `clientType` to dis
 ```
 message_client_session(
   project: "my-project",
-  clientType: "codex",   // "claude-code" | "opencode" | "codex" | "gemini"
+  clientType: "codex",   // "claude-code" | "opencode" | "codex" | "antigravity"
   message: "..."
 )
 ```

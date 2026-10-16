@@ -38,14 +38,27 @@ pnpm install && pnpm run build:all && npm install -g .
 
 ### `init`
 
-Wizard de configuración para un proyecto. Detecta el cwd, pregunta `identity` y clientes, escribe/mergea `.mcp.json` (inyectando `AGENT_BRIDGE_IDENTITY`), levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity) y registra el MCP en Codex (`codex mcp add` global sin proyecto ni identity; la identity va al `.codex/config.toml` del proyecto). Después alcanza con `claude` y `codex` a secas: los dos reciben los mensajes como turno nuevo en la sesión viva.
+Wizard de configuración para un proyecto. Detecta el cwd, pregunta `identity` y clientes, escribe/mergea `.mcp.json` (inyectando `AGENT_BRIDGE_IDENTITY`), levanta el registry como daemon, instala la pieza de cada cliente (OpenCode → `opencode install-plugin --project`; pi → `pi install-extension`; Antigravity → `antigravity install-plugin`) y registra el MCP en Codex (`codex mcp add` global sin proyecto ni identity; la identity va al `.codex/config.toml` del proyecto). Después alcanza con el comando a secas — `claude`, `codex`, `opencode`, `pi`, `agy`: todos reciben los mensajes como turno nuevo en la sesión viva (ver [Entrega nativa por cliente](./cli-reference.md#entrega-nativa-por-cliente)).
 
-Opciones: `--identity <id>`, `--client <name>` (repetible o separado por comas), `--project <path>`, `-p, --port <number>`, `--mode <linked|local>`, `-y, --yes` (no interactivo).
+Opciones: `--identity <id>`, `--client <claude|codex|opencode|antigravity|pi>` (repetible o separado por comas), `--project <path>`, `-p, --port <number>`, `--mode <linked|local>`, `-y, --yes` (no interactivo).
 
 ```bash
 oab init                                  # interactivo
 oab init --yes --identity dev --client claude   # scripting/CI
+oab init --yes --client opencode,pi,antigravity # plugin de OpenCode + extensión de pi + plugin de agy
 ```
+
+### Instaladores por cliente
+
+`init` los llama solo; se pueden correr a mano para reinstalar o actualizar.
+
+```bash
+oab opencode install-plugin [--project <path>] [--global]  # OpenCode 2: <plugins>/open-agent-bridge/{index.ts,tui.ts}; OpenCode 1: agent-bridge.ts
+oab pi install-extension [--project <path>]                # ~/.pi/agent/extensions/open-agent-bridge.ts (o <path>/.pi/extensions/)
+oab antigravity install-plugin                             # agy plugin install <repo>/plugins/open-agent-bridge (MCP + hooks + skill)
+```
+
+Reiniciá el agente después de instalar. En agy, el hook `SessionStart` le pide al agente que corra `open-agent-bridge antigravity attach` una vez por sesión de agy: es lo que habilita la entrega en vivo (agy solo da el token de su language server a los comandos de su agente). Sin `attach`, agy no recibe en vivo: el adapter deja los mensajes pendientes y el hook `Stop` los entrega al terminar el turno.
 
 ### `up` / `down` / `status`
 
@@ -67,7 +80,7 @@ oab claude --identity dev [--project <path>] [--port 4999] [-- <flags de claude>
 
 ### `doctor`
 
-Diagnóstico sin abortar: Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, binarios de cliente (`claude`/`codex`/`opencode`/`agy`), entrega nativa por versión (Claude Code ≥ 2.1.224, codex ≥ 0.162) y registro del MCP en Codex, incluido el aviso de un `AGENT_BRIDGE_PROJECT` fijado en el config global. Soporta `--json`.
+Diagnóstico sin abortar: Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, binarios de cliente (`claude`/`codex`/`opencode`/`agy`/`pi`), entrega nativa por versión (Claude Code ≥ 2.1.224, codex ≥ 0.162), la pieza instalada en cada agente que la necesita (plugin de OpenCode — *outdated* si es el archivo suelto `agent-bridge.ts` o le falta `tui.ts` —, extensión de pi, plugin `oab` de agy vía `agy plugin list --json`) y registro del MCP en Codex, incluido el aviso de un `AGENT_BRIDGE_PROJECT` fijado en el config global. Soporta `--json`.
 
 ```bash
 oab doctor
@@ -390,6 +403,7 @@ pnpm run dev:dashboard
 ## Señales operativas importantes
 
 - El registry y los agentes hacen bind en `localhost`.
+- La entrega a OpenCode y pi pasa por host inbox sockets en `$XDG_RUNTIME_DIR/open-agent-bridge/` (0700/0600); la de agy, por `agy-<pid>.json` en el mismo directorio. Si una entrega a Codex, OpenCode, pi o agy falla, el mensaje queda pendiente y lo reintenta el sync del registry.
 - El registry no persiste datos; reiniciar el proceso limpia el estado.
 - El dashboard servido por el registry requiere que exista `dashboard/dist`.
 - `build:all` copia `dashboard/dist` a `dist/dashboard`, pero el registry en runtime consulta `../../dashboard/dist` relativo al archivo compilado. En la práctica conviene compilar el dashboard en su carpeta original antes de usar `/dashboard`.

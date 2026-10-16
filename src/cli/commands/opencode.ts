@@ -44,8 +44,8 @@ export function registerOpenCodeCommand(program: Command): void {
     .command("install-plugin")
     .description(
       "Install the open-agent-bridge plugin into an OpenCode project (or globally). " +
-        "The plugin opens a WebSocket to the bridge registry and delivers channel messages " +
-        "directly into the active session via session.prompt_async, enabling real-time push.",
+        "It registers the MCP server and turns each channel message into a new turn in the " +
+        "session in use; on OpenCode 2 its terminal half also opens that session from the home screen.",
     )
     .option("--project <path>", "Project path (default: cwd)", process.cwd())
     .option("--global", "Install to ~/.config/opencode/plugins/ instead of the project directory")
@@ -128,8 +128,8 @@ export function registerOpenCodeCommand(program: Command): void {
       console.log(chalk.bold("Done!") + " Restart OpenCode for the plugin to load.");
       console.log(
         chalk.dim(
-          "  Once loaded, the plugin registers as an [OpenCode bridge] in list_agents and\n" +
-            "  delivers channel messages directly into the active session (no inbox polling).",
+          "  Once loaded, OpenCode shows up as [OpenCode] in list_agents and channel messages\n" +
+            "  arrive as a new turn in the session in use (no inbox polling).",
         ),
       );
       console.log();

@@ -17,8 +17,8 @@ Any state can also transition directly to `failed` if the delivery attempt exhau
 | State | Meaning | Actor |
 |---|---|---|
 | `queued` | Message created, not yet delivered | Registry |
-| `delivered_to_bridge` | Bridge daemon received the WS event | Bridge |
-| `displayed_to_client` | Client session received the injection / push | Bridge or MCP adapter |
+| `delivered_to_bridge` | The recipient's MCP adapter (or bridge daemon) received the WS event | Adapter or bridge |
+| `displayed_to_client` | The message was handed to the recipient's live session as a new turn | Adapter or bridge |
 | `answered` | A reply was sent on the same `conversationId` | Any agent |
 | `failed` | Delivery failed and will not be retried | Registry or bridge |
 
@@ -38,18 +38,17 @@ Any state can also transition directly to `failed` if the delivery attempt exhau
 
 ## Automatic ACKs
 
-Each bridge sends ACKs automatically:
+The recipient's MCP adapter (or an `oab codex start` bridge) sends ACKs automatically:
 
 - `delivered_to_bridge` — sent as soon as the WS channel event is received
-- `displayed_to_client` — sent after the injection succeeds (turn injected into Codex/Gemini, prompt_async called for OpenCode, notification pushed for Claude Code)
+- `displayed_to_client` — sent after the hand-off succeeds: written to Claude Code's inbox socket, turn started on the Codex daemon, written to the OpenCode / pi host inbox socket, or accepted by agy's language server
 
-The MCP adapter sends both ACKs for Claude Code peers.
+A failed hand-off on Codex, OpenCode, pi or Antigravity sends no ACK: the message stays pending and the next registry sync retries it. Claude Code falls back to the channel notification.
 
 ## Retry and expiry
 
 - Messages can have an `expiresAt` timestamp. After expiry, `channel_inbox` returns them under `expiredOnly` filtering.
 - Retry via `POST /channel/messages/:convId/:msgId/retry` — increments `attemptCount` and re-delivers.
-- Gemini queue: up to 10 messages buffered while a turn is in progress; each retried up to 3 times with 5s delay.
 - ACK sweep runs every 60s to mark expired messages as `failed`.
 
 ## Suppression

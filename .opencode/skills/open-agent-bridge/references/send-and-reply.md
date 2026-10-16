@@ -28,7 +28,7 @@ message_client_session(
 
 ## Replying to an inbound message
 
-After receiving a `<channel>` push or finding a pending entry in `channel_inbox`:
+An inbound message arrives as a new turn that already contains the filled-in `reply` call. Otherwise, find it in `channel_inbox`:
 
 ```
 channel_inbox(pendingOnly: true)
@@ -63,7 +63,7 @@ Explicit `expectsResponse: false` suppresses the "reply required" injection prom
 ```
 message_client_session(
   project: "fit-mipyme-frontend",
-  clientType: "codex",            // disambiguate: "claude-code" | "opencode" | "codex" | "gemini"
+  clientType: "codex",            // disambiguate: "claude-code" | "opencode" | "codex" | "antigravity"
   message: "Run the test suite"
 )
 ```
@@ -73,14 +73,13 @@ message_client_session(
 | Goal | How |
 |---|---|
 | Send to Claude Code in a project | `project: "my-app", clientType: "claude-code"` |
-| Send to the bridge (not inner client) | Use the `clientId` of the bridge daemon directly |
+| Send to an `oab codex start` bridge | Use any agentId of that Codex pair; the inner client is redirected |
 | Reply to an inbound message | Always use `reply`, never `message_client_session` |
 | Broadcast to all agents | Use CLI `broadcast` command or POST to each agentId manually |
 
 ## expectsResponse semantics
 
-- Default is `true` — agent-to-agent messages are conversations.
-- Bridge daemons inject "reply required" context when `expectsResponse: true`.
-- Bridge daemons inject "informational (no reply)" context when `expectsResponse: false`.
-- Claude Code receives a raw `<channel>` block either way and decides based on context.
+- If omitted, the adapter infers it from the message text (questions and review/confirm requests → `true`; FYI → `false`).
+- The receiver's turn is headed "reply required" when `expectsResponse: true` and "informational (no reply)" when `false` — the same for every client.
+- Only a Claude Code session on the legacy `<channel>` fallback gets a raw block and decides based on context.
 - For deterministic behavior pass the flag explicitly; text inference is a convenience.

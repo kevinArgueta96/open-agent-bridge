@@ -21,12 +21,12 @@ Steps:
 3. Call `message_client_session` with the resolved peer and the message text.
    Pass the message through as the user wrote it; do not rewrite or summarise it.
 4. Report the delivery state returned by the tool, in plain words:
-   - `queued` / `delivered_to_bridge` — the peer's bridge has it but its agent
-     has not surfaced it yet.
-   - `displayed_to_client` — the peer's agent has seen it.
+   - `queued` / `delivered_to_bridge` — the peer's adapter has it but its
+     session has not started the turn yet.
+   - `displayed_to_client` — it reached the peer's live session as a new turn.
    - `answered` — the peer replied; show the reply verbatim.
    - `failed` — show the failure detail the tool returned.
 
 Do not poll repeatedly waiting for a reply. If it has not been answered yet, say
-so and tell the user the reply will arrive as a notification, or that they can
-check with `/oab:inbox`.
+so and tell the user the reply will arrive in this session as a new turn, or that
+they can check with `/oab:inbox`.

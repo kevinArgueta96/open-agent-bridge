@@ -1,47 +1,41 @@
 # Troubleshooting
 
+Start with `open-agent-bridge doctor`: it checks native delivery for every installed client (Claude Code and Codex versions, the OpenCode plugin, the pi extension, the agy plugin) and prints the fix for each failed check.
+
 ## `delivered_to_bridge` — stuck, no progress
 
-The bridge received the message but the client session never processed it.
+The recipient's adapter received the message but could not hand it to the live session. On Codex, OpenCode, pi and Antigravity the message stays pending and is retried on the next registry sync.
 
-**Codex:** The bridge daemon is running but no Codex TUI is attached. A plain `codex` session is isolated from the bridge's app-server.
+**Claude Code:** needs ≥ 2.1.224 for the inbox socket. Older releases: launch with `open-agent-bridge claude --legacy-channels`.
 
-Fix:
+**Codex:** needs codex ≥ 0.162 (app-server daemon). Headless or older Codex:
 ```bash
-# Option A — let the bridge launch and attach Codex
 open-agent-bridge codex start --project /path/to/project
-
-# Option B — start bridge only, attach Codex manually
-open-agent-bridge codex app-bridge --project /path/to/project
-codex --remote ws://127.0.0.1:4500
 ```
 
-**Gemini:** ACP bridge running but `gemini --acp` subprocess exited or stalled.
-
-Fix:
+**OpenCode:** the plugin is missing or outdated. Install it and restart OpenCode:
 ```bash
-open-agent-bridge gemini start --project /path/to/project
+open-agent-bridge opencode install-plugin   # --global for every project
 ```
 
-**OpenCode:** Plugin bridge running but `session.prompt_async` failed silently.
+**pi:** the extension is missing. Install it and restart pi (or `/reload`):
+```bash
+open-agent-bridge pi install-extension
+```
 
-Check: Is OpenCode running? Did the plugin install succeed? Restart OpenCode.
-
-**Claude Code:** The MCP adapter is running but the Claude terminal disconnected.
-
-Check: Is Claude Code open and connected? `notifications/claude/channel` requires an active session.
+**Antigravity (`agy`):** the plugin is missing, or the session has not run `attach` yet (the SessionStart hook asks agy's agent to run it on the first turn). Until then the Stop hook delivers pending messages at the end of each turn.
+```bash
+open-agent-bridge antigravity install-plugin   # then restart agy
+open-agent-bridge antigravity attach           # run by agy's agent, from inside agy
+```
 
 ---
 
 ## `displayed_to_client` — stuck at this state, no `answered`
 
-The message was delivered but the recipient has not replied.
+The message started a turn in the recipient's session but the recipient has not replied yet. Wait for the turn to complete, or check that agent's terminal. A model that has no provider configured (for example pi before `/login`) receives the turn but cannot answer.
 
-For Codex/Gemini: they received the injection as a turn but have not sent a reply channel message yet. Wait for the turn to complete, or check the Codex/Gemini terminal for errors.
-
-For OpenCode: `session.prompt_async` was called but the session is idle or the model is not calling the `reply` tool. Check the OpenCode terminal.
-
-For Claude Code: The `<channel>` block is visible in the terminal but the user has not asked Claude to reply. Prompt Claude to call `reply` with the `replyWith` fields.
+**OpenCode:** with the terminal on its home screen the message goes to an `open-agent-bridge` session. OpenCode 2's terminal opens it automatically; if you are in another session a toast says where it went.
 
 ---
 
@@ -55,63 +49,36 @@ The registry is not running.
 
 Fix:
 ```bash
+open-agent-bridge up
+# or explicitly:
 open-agent-bridge registry start
-# or in auto mode (embedded registry):
-open-agent-bridge mcp start
 ```
 
 ---
 
 ## `list_agents` returns empty or missing peers
 
-The `AgentStore` is in-memory. After a registry restart, all registered agents must re-register. Bridges re-register automatically on reconnect. If a peer is missing, restart its bridge daemon.
+The `AgentStore` is in-memory. After a registry restart, all registered agents must re-register. Adapters and bridges re-register automatically on reconnect. If a peer is missing, restart that agent.
 
 ---
 
 ## MCP tools not available in OpenCode
 
-The MCP server entry is missing from the OpenCode MCP config. Generate and add it:
-
-```bash
-open-agent-bridge mcp config --write
-```
-
-Then restart OpenCode.
-
----
-
-## OpenCode not receiving push messages (no auto-injection)
-
-The plugin bridge is not installed or not running.
-
-Install it:
-```bash
-open-agent-bridge opencode install-plugin --project /path/to/project
-```
-
-Then restart OpenCode. The plugin auto-loads from `.opencode/plugins/agent-bridge.ts` — no `opencode.json` edit needed.
-
----
-
-## Codex inner client visible but messages not delivered
-
-A Codex session started with plain `codex` (no `--remote`) registers an inner MCP client but the bridge cannot inject turns into it. The inner client can only pull via `channel_inbox`.
-
-To get automatic injection: use `codex --remote ws://127.0.0.1:4500` against a running `codex app-bridge`.
+The plugin registers the MCP server itself. Reinstall it (`open-agent-bridge opencode install-plugin`) and restart OpenCode. On OpenCode 2 it lives in `.opencode/plugins/open-agent-bridge/{index.ts,tui.ts}` (or `~/.config/opencode/plugins/` with `--global`); no `opencode.json` edit is needed. A leftover single-file `agent-bridge.ts` is removed by the installer and flagged by `doctor`.
 
 ---
 
 ## WS reconnect / registry restart
 
-All bridge daemons implement exponential backoff with jitter on WS disconnect. They also run a periodic re-sync (every 5 minutes) that pulls missed messages from `/channel/conversations` and re-injects them. `BoundedIdSet(5000)` prevents duplicate injection on re-sync.
+Adapters and bridge daemons reconnect with exponential backoff and jitter. They also run a periodic re-sync that pulls missed messages from `/channel/conversations` and re-delivers them. The adapter skips ids it already delivered, and the OpenCode / pi listeners drop a repeated message id, so a re-sync does not start a second turn.
 
 ---
 
 ## Supercession (WS close code 4001)
 
-When a new session registers with the same stable agentId hash, the registry closes the old WS connection with code 4001 (superceded). The old bridge daemon detects this and stops. The new session takes over the agentId.
+When a new session registers with the same stable agentId hash, the registry closes the old WS connection with code 4001 (superceded). The old process detects this and stops. The new session takes over the agentId.
 
-This is expected behavior when restarting a bridge daemon while the registry is running.
+This is expected behavior when restarting an agent while the registry is running.
 
 ---
 

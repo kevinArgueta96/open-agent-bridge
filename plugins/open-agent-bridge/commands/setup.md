@@ -32,9 +32,12 @@ fix anything before reporting, except where a step says you may offer.
      user to restart the session so the plugin's MCP server starts.
 
 5. **Live delivery** — run `open-agent-bridge doctor` and report its
-   `client: claude (native push)` / `client: codex (native push)` lines.
+   `(native push)` lines for every installed client.
    - Claude Code ≥ 2.1.224 and codex ≥ 0.162 get incoming messages as a new
      turn in the live session, with no extra flags or daemons.
+   - OpenCode, pi and agy need their in-host piece once:
+     `oab opencode install-plugin`, `oab pi install-extension`,
+     `oab antigravity install-plugin`.
    - Older Claude Code needs `oab claude --legacy-channels`; older Codex needs
      `oab codex start`.
    - Report any failed doctor check verbatim, including its suggested fix
