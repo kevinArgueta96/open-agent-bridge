@@ -4,8 +4,13 @@ import type { RouteRecordRaw } from "vue-router";
 const routes: RouteRecordRaw[] = [
   {
     path: "/",
-    name: "dashboard",
-    component: () => import("@/views/DashboardView.vue"),
+    name: "cockpit",
+    component: () => import("@/views/CockpitView.vue"),
+  },
+  {
+    path: "/network",
+    name: "network",
+    component: () => import("@/views/NetworkView.vue"),
   },
   {
     path: "/agents/:id",
@@ -13,6 +18,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/AgentDetailView.vue"),
     props: true,
   },
+  // Parked (operational) surfaces — reachable by deep link, not in the primary nav.
   {
     path: "/inbox",
     name: "inbox",

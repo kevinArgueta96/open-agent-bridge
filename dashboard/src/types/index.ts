@@ -104,7 +104,19 @@ export type WsMessage =
   | { type: "channel.message"; timestamp: string; data: ChannelMessagePayload }
   | { type: "channel.ack"; timestamp: string; data: ChannelAckPayload }
   | { type: "channel.conversation.suppressed"; timestamp: string; data: { conversationId: string } }
-  | { type: "channel.conversation.revived"; timestamp: string; data: { conversationId: string } };
+  | { type: "channel.conversation.revived"; timestamp: string; data: { conversationId: string } }
+  | {
+      type: "claude.notify";
+      timestamp: string;
+      data: {
+        agentId: string;
+        agentName?: string;
+        content?: string;
+        conversationId?: string;
+        messageId?: string;
+        meta?: Record<string, unknown>;
+      };
+    };
 
 export interface TaskUpdatePayload {
   agentId: string;
