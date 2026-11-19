@@ -21,7 +21,7 @@ interface FakeDaemon {
 
 function fakeDaemon(
   dir: string,
-  threads: Array<{ id: string; cwd: string; status: string }>,
+  threads: Array<{ id: string; cwd: string; status: string; parentThreadId?: string; source?: unknown; recencyAt?: number }>,
   { silent = false, idleDuringRead = false }: { silent?: boolean; idleDuringRead?: boolean } = {},
 ): Promise<FakeDaemon> {
   const socketPath = join(dir, "d.sock");
@@ -87,28 +87,48 @@ describe("deliverViaCodexDaemon", () => {
     expect(daemon.turnStarts).toEqual([{ threadId: MINE, input: [{ type: "text", text: "hello codex" }] }]);
   });
 
-  it("picks its own thread when an older one from a closed TUI is still loaded in the project", async () => {
-    // The daemon keeps threads loaded after their TUI exits; the adapter was
-    // spawned for the thread created right before it started.
+  it("picks the newest thread when an older one from a closed TUI is still loaded in the project", async () => {
     daemon = await fakeDaemon(dir, [
       { id: OTHER, cwd: "/proj", status: "idle" },
       { id: MINE, cwd: "/proj", status: "idle" },
     ]);
-    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath, startedAt: T0 - 500 });
+    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath });
     expect(ok).toBe(true);
     expect(daemon.turnStarts.map((t) => t.threadId)).toEqual([MINE]);
   });
 
-  it("stays quiet when it belongs to an older session than another live one in the project", async () => {
-    // A closed TUI's adapter keeps running with the same agentId; it must not
-    // inject into its dead thread and answer a second time.
+  it("ignores a subagent thread, even when it is the newest one in the project", async () => {
+    // A subagent has no adapter of its own: deferring to it left the message undelivered.
     daemon = await fakeDaemon(dir, [
-      { id: OTHER, cwd: "/proj", status: "idle" },
-      { id: MINE, cwd: "/proj", status: "idle" },
+      { id: MINE, cwd: "/proj", status: "idle", recencyAt: 100 },
+      { id: v7(T0 + 60_000), cwd: "/proj", status: "idle", recencyAt: 200, parentThreadId: MINE },
+      { id: v7(T0 + 90_000), cwd: "/proj", status: "idle", recencyAt: 300, source: { subAgent: "review" } },
     ]);
-    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath, startedAt: T0 - 60_500 });
-    expect(ok).toBe(false);
-    expect(daemon.turnStarts).toHaveLength(0);
+    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath });
+    expect(ok).toBe(true);
+    expect(daemon.turnStarts.map((t) => t.threadId)).toEqual([MINE]);
+  });
+
+  it("delivers to a resumed old thread when it is the one last used", async () => {
+    // `codex resume` keeps the thread's old id; activity, not creation time, says where the user is.
+    daemon = await fakeDaemon(dir, [
+      { id: OTHER, cwd: "/proj", status: "idle", recencyAt: 900 },
+      { id: MINE, cwd: "/proj", status: "idle", recencyAt: 500 },
+    ]);
+    const ok = await deliverViaCodexDaemon("x", { cwd: "/proj", socketPath: daemon.socketPath });
+    expect(ok).toBe(true);
+    expect(daemon.turnStarts.map((t) => t.threadId)).toEqual([OTHER]);
+  });
+
+  it("starts one turn when several adapters of the project get the same message", async () => {
+    // Every session's adapter (closed TUIs included) shares the agentId and receives the message.
+    daemon = await fakeDaemon(dir, [{ id: MINE, cwd: "/proj", status: "idle" }]);
+    const opts = { cwd: "/proj", socketPath: daemon.socketPath, messageId: "m/1", claimDir: join(dir, "claims") };
+    const results = await Promise.all([deliverViaCodexDaemon("x", opts), deliverViaCodexDaemon("x", opts)]);
+    expect(results.sort()).toEqual([false, true]);
+    expect(daemon.turnStarts).toHaveLength(1);
+    // Another message is not held back by that claim.
+    expect(await deliverViaCodexDaemon("y", { ...opts, messageId: "m/2" })).toBe(true);
   });
 
   it("waits for a busy thread to go idle instead of interrupting it", async () => {

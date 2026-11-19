@@ -14,8 +14,8 @@
  * to `idle` and take the next turn, the same queueing Claude Code applies.
  */
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 
@@ -31,7 +31,20 @@ interface ThreadSummary {
   id: string;
   cwd?: string;
   status?: { type?: string };
+  /** Set only on subagent threads. */
+  parentThreadId?: string | null;
+  source?: unknown;
+  /** Seconds since epoch; what the daemon orders threads by. */
+  recencyAt?: number | null;
+  updatedAt?: number;
 }
+
+/** A thread Codex spawned for itself (subagent, review, compaction): nobody is looking at it. */
+function isSubagentThread(thread: ThreadSummary): boolean {
+  return Boolean(thread.parentThreadId) || (typeof thread.source === "object" && thread.source !== null && "subAgent" in thread.source);
+}
+
+const recency = (thread: ThreadSummary) => thread.recencyAt ?? thread.updatedAt ?? 0;
 
 export interface CodexDaemonOptions {
   /** Project directory; the target is a loaded thread whose cwd matches it. */
@@ -41,8 +54,25 @@ export interface CodexDaemonOptions {
   idleWaitMs?: number;
   /** How long connecting + finding the thread may take. Default 10 s. */
   discoveryTimeoutMs?: number;
-  /** When this adapter process started (ms epoch). Default: from process.uptime(). */
-  startedAt?: number;
+  /** Message being delivered. Every Codex session of a project runs an adapter
+   *  with the same agentId and all of them get the message; with this set, only
+   *  the first one to claim it starts the turn. */
+  messageId?: string;
+  /** Where claims are kept. Default: the bridge's runtime dir. */
+  claimDir?: string;
+}
+
+/** Atomically claim `messageId` for this process. Returns the claim's path, or null if another adapter holds it. */
+function claimDelivery(messageId: string, dir: string): string | null {
+  // ponytail: empty files in the runtime dir (tmpfs, gone at logout); sweep old ones if it ever lives on disk.
+  const path = join(dir, `codex-turn-${messageId.replace(/[^\w-]/g, "_")}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, "", { flag: "wx" });
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /** Thread ids are UUIDv7: the first 48 bits are the creation time in ms. */
@@ -72,8 +102,8 @@ export function codexDaemonSocketPath(env: NodeJS.ProcessEnv = process.env): str
 /**
  * Start a turn with `content` on the live Codex thread for `cwd`. Resolves
  * `true` once the daemon accepted the turn; `false` when there is no daemon,
- * no loaded thread for the project, a newer session owns the project, the
- * thread stayed busy past `idleWaitMs`, or anything failed — so the caller can
+ * no loaded thread for the project, another adapter already claimed the
+ * message, the thread stayed busy past `idleWaitMs`, or anything failed — so the caller can
  * leave the message pending and retry later. Never throws.
  */
 export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptions): Promise<boolean> {
@@ -116,7 +146,13 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
     const startTurn = async () => {
       if (started || !threadId) return;
       started = true;
+      const claim = options.messageId
+        ? claimDelivery(options.messageId, options.claimDir ?? join(process.env.XDG_RUNTIME_DIR || tmpdir(), "open-agent-bridge"))
+        : undefined;
+      if (claim === null) return done(false);
       const res = await call("turn/start", { threadId, input: [{ type: "text", text: content }] });
+      // A rejected turn frees the message for the next retry.
+      if (res.error && claim) rmSync(claim, { force: true });
       done(!res.error);
     };
 
@@ -151,21 +187,17 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
         for (const id of loaded) {
           const read = (await call("thread/read", { threadId: id })).result;
           const thread = (read?.thread ?? read) as ThreadSummary | undefined;
-          if (thread?.cwd === options.cwd) candidates.push({ ...thread, id });
+          if (thread?.cwd === options.cwd && !isSubagentThread(thread)) candidates.push({ ...thread, id });
         }
         // The daemon keeps threads loaded after their TUI closes, so the cwd alone
-        // is ambiguous. It starts one MCP adapter per thread right as the thread is
-        // created, so ours is the one born closest to this process.
-        // ponytail: a resumed old thread spawns a fresh adapter but keeps its old
-        // id; that only misroutes when another thread is live in the same project.
-        const startedAt = options.startedAt ?? Date.now() - process.uptime() * 1000;
-        const thread = candidates.sort(
-          (a, b) => Math.abs(uuidV7Time(a.id) - startedAt) - Math.abs(uuidV7Time(b.id) - startedAt),
-        )[0];
+        // is ambiguous: the live one is the thread the user last worked in. A
+        // thread's id says when it was created, not when it was last used — a
+        // resumed thread keeps its old id — so creation time only breaks ties.
+        // ponytail: a thread resumed but not yet used loses to a closed one with
+        // later activity until its first turn; the daemon does not report which
+        // threads have a TUI attached.
+        const thread = candidates.sort((a, b) => recency(b) - recency(a) || uuidV7Time(b.id) - uuidV7Time(a.id))[0];
         if (!thread) return done(false);
-        // Adapters of closed TUIs stay alive with the same agentId and would each
-        // answer from their dead thread. Only the newest session delivers.
-        if (candidates.some((c) => uuidV7Time(c.id) > uuidV7Time(thread.id))) return done(false);
         threadId = thread.id;
         if ((statusOf.get(thread.id) ?? thread.status?.type) === "idle") await startTurn();
       } catch {

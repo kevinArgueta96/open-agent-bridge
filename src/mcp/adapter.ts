@@ -650,7 +650,7 @@ export class McpAgentBridge {
           // One at a time: two messages waiting on the same busy thread would
           // both see it go idle and race for the same turn.
           const delivery = this.codexDeliveries.then(() =>
-            deliverViaCodexDaemon(prompt, { cwd: this.resolvedProjectPath }),
+            deliverViaCodexDaemon(prompt, { cwd: this.resolvedProjectPath, messageId: channelMessage.messageId }),
           );
           this.codexDeliveries = delivery;
           return delivery;
@@ -658,8 +658,8 @@ export class McpAgentBridge {
         "Message injected into the live Codex session via the app-server daemon",
         // Codex ignores MCP notifications: a fallback push would only ack a message
         // nobody saw and stop the registry sync from retrying it. Leaving it
-        // pending also covers the adapter of a closed TUI, which defers to the
-        // live session's adapter.
+        // pending also covers the adapters that lost the claim on this message
+        // to another session's adapter.
         { notifyOnFailure: false },
       );
       return;

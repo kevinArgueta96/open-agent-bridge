@@ -953,7 +953,7 @@ Since codex-cli 0.162 the `codex` TUI no longer runs its own engine: it attaches
 Incoming channel message
   → the Codex MCP adapter (client-codex-mcp-client-*) receives it via the registry WS
   → connects to the daemon socket: initialize → thread/loaded/list → thread/read
-  → picks its own thread (same cwd, UUIDv7 creation time closest to the adapter's start)
+  → picks the live thread (same cwd, not a subagent, most recent activity); one adapter claims the message
   → turn/start on that thread — it shows up in the live TUI as a new turn
   → Codex answers with the `reply` tool, like Claude Code does
 ```
