@@ -22,7 +22,7 @@ interface FakeDaemon {
 function fakeDaemon(
   dir: string,
   threads: Array<{ id: string; cwd: string; status: string; parentThreadId?: string; source?: unknown; recencyAt?: number }>,
-  { silent = false, idleDuringRead = false }: { silent?: boolean; idleDuringRead?: boolean } = {},
+  { silent = false, idleDuringRead = false, dropOnTurn = false }: { silent?: boolean; idleDuringRead?: boolean; dropOnTurn?: boolean } = {},
 ): Promise<FakeDaemon> {
   const socketPath = join(dir, "d.sock");
   const http: Server = createServer();
@@ -47,6 +47,7 @@ function fakeDaemon(
       }
       if (msg.method === "turn/start") {
         turnStarts.push(msg.params);
+        if (dropOnTurn && turnStarts.length === 1) return ws.terminate();
         reply({ turn: { id: "t-1", status: "inProgress" } });
       }
     });
@@ -129,6 +130,24 @@ describe("deliverViaCodexDaemon", () => {
     expect(daemon.turnStarts).toHaveLength(1);
     // Another message is not held back by that claim.
     expect(await deliverViaCodexDaemon("y", { ...opts, messageId: "m/2" })).toBe(true);
+  });
+
+  it("claims per thread, so a broadcast still reaches the session of another project", async () => {
+    daemon = await fakeDaemon(dir, [
+      { id: MINE, cwd: "/proj", status: "idle" },
+      { id: OTHER, cwd: "/other", status: "idle" },
+    ]);
+    const opts = { socketPath: daemon.socketPath, messageId: "m1", claimDir: join(dir, "claims") };
+    expect(await deliverViaCodexDaemon("x", { ...opts, cwd: "/proj" })).toBe(true);
+    expect(await deliverViaCodexDaemon("x", { ...opts, cwd: "/other" })).toBe(true);
+    expect(daemon.turnStarts.map((t) => t.threadId)).toEqual([MINE, OTHER]);
+  });
+
+  it("frees the message when the daemon drops the connection before accepting the turn", async () => {
+    daemon = await fakeDaemon(dir, [{ id: MINE, cwd: "/proj", status: "idle" }], { dropOnTurn: true });
+    const opts = { cwd: "/proj", socketPath: daemon.socketPath, messageId: "m1", claimDir: join(dir, "claims") };
+    expect(await deliverViaCodexDaemon("x", opts)).toBe(false);
+    expect(await deliverViaCodexDaemon("x", opts)).toBe(true);
   });
 
   it("waits for a busy thread to go idle instead of interrupting it", async () => {

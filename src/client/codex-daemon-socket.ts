@@ -62,10 +62,10 @@ export interface CodexDaemonOptions {
   claimDir?: string;
 }
 
-/** Atomically claim `messageId` for this process. Returns the claim's path, or null if another adapter holds it. */
-function claimDelivery(messageId: string, dir: string): string | null {
+/** Atomically claim `key` for this process. Returns the claim's path, or null if another adapter holds it. */
+function claimDelivery(key: string, dir: string): string | null {
   // ponytail: empty files in the runtime dir (tmpfs, gone at logout); sweep old ones if it ever lives on disk.
-  const path = join(dir, `codex-turn-${messageId.replace(/[^\w-]/g, "_")}`);
+  const path = join(dir, `codex-turn-${key.replace(/[^\w-]/g, "_")}`);
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(path, "", { flag: "wx" });
@@ -119,10 +119,13 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
     let threadId: string | null = null;
     let started = false;
     let settled = false;
+    let claim: string | null | undefined;
 
     const done = (ok: boolean) => {
       if (settled) return;
       settled = true;
+      // Anything short of an accepted turn frees the message for the next retry.
+      if (!ok && claim) rmSync(claim, { force: true });
       clearTimeout(timer);
       clearTimeout(discoveryTimer);
       ws.close();
@@ -146,13 +149,15 @@ export function deliverViaCodexDaemon(content: string, options: CodexDaemonOptio
     const startTurn = async () => {
       if (started || !threadId) return;
       started = true;
-      const claim = options.messageId
-        ? claimDelivery(options.messageId, options.claimDir ?? join(process.env.XDG_RUNTIME_DIR || tmpdir(), "open-agent-bridge"))
-        : undefined;
-      if (claim === null) return done(false);
+      // Per thread: a broadcast reaches sessions of other projects under the same message id.
+      if (options.messageId) {
+        claim = claimDelivery(
+          `${options.messageId}-${threadId}`,
+          options.claimDir ?? join(process.env.XDG_RUNTIME_DIR || tmpdir(), "open-agent-bridge"),
+        );
+        if (claim === null) return done(false);
+      }
       const res = await call("turn/start", { threadId, input: [{ type: "text", text: content }] });
-      // A rejected turn frees the message for the next retry.
-      if (res.error && claim) rmSync(claim, { force: true });
       done(!res.error);
     };
 
